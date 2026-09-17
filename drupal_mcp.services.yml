@@ -133,6 +133,7 @@ services:
       - '@drupal_mcp.idempotency'
       - '@current_user'
       - '@config.factory'
+      - '@entity_field.manager'
     tags:
       - { name: drupal_mcp.tool_provider }
 

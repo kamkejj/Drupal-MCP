@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\drupal_mcp\Tool;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\drupal_mcp\Idempotency\IdempotencyConflictException;
 use Drupal\drupal_mcp\Idempotency\IdempotencyInProgressException;
@@ -28,25 +29,13 @@ final class ContentMutationToolProvider implements ToolProviderInterface {
     private readonly IdempotencyManager $idempotency,
     private readonly AccountProxyInterface $currentUser,
     private readonly ConfigFactoryInterface $configFactory,
+    private readonly EntityFieldManagerInterface $entityFieldManager,
   ) {}
 
   /**
    * {@inheritdoc}
    */
   public function tools(): array {
-    $body = [
-      'type' => 'object',
-      'properties' => (object) [
-        'value' => ['type' => 'string'],
-        'format' => ['type' => 'string'],
-      ],
-      'required' => ['value', 'format'],
-      'additionalProperties' => FALSE,
-    ];
-    $fields = [
-      'title' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255],
-      'body' => $body,
-    ];
     $key = ['type' => 'string', 'minLength' => 8, 'maxLength' => 128, 'pattern' => '^[A-Za-z0-9._~-]+$'];
     $settings = $this->configFactory->get('drupal_mcp.settings');
     // Writable bundles are a strict subset of the bundles exposed for reads.
@@ -54,6 +43,37 @@ final class ContentMutationToolProvider implements ToolProviderInterface {
       array_values((array) ($settings->get('writable_node_bundles') ?? [])),
       array_values((array) ($settings->get('node_bundles') ?? [])),
     ));
+    // ponytail: scalar/text/reference field mapping only; exotic field
+    // types fall back to an opaque scalar slot; add typed schemas when needed.
+    $fields = ['title' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255]];
+    foreach ($writableBundles as $bundle) {
+      foreach ($this->entityFieldManager->getFieldDefinitions('node', $bundle) as $name => $definition) {
+        if ($name === 'title' || isset($fields[$name]) || str_starts_with($name, 'revision_')) {
+          continue;
+        }
+        $fields[$name] = match ($definition->getType()) {
+          'text', 'text_long', 'text_with_summary' => [
+            'type' => 'object',
+            'properties' => (object) [
+              'value' => ['type' => 'string'],
+              'format' => ['type' => 'string'],
+            ],
+            'required' => ['value', 'format'],
+            'additionalProperties' => FALSE,
+          ],
+          'entity_reference', 'entity_reference_revisions' => [
+            'oneOf' => [
+              ['type' => 'integer', 'minimum' => 1],
+              ['type' => 'array', 'items' => ['type' => 'integer', 'minimum' => 1], 'minItems' => 1],
+            ],
+          ],
+          'boolean' => ['type' => 'boolean'],
+          'integer' => ['type' => 'integer'],
+          'float', 'decimal' => ['type' => 'number'],
+          default => ['type' => 'string'],
+        };
+      }
+    }
 
     return [
       new ToolDefinition(
