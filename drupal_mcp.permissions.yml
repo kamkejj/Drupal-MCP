@@ -1,0 +1,10 @@
+access mcp read:
+  title: 'Use MCP read operations'
+  description: 'Allows use of the read-only MCP inspection tools at /mcp. This is an additional gate only: it never bypasses OAuth authentication, OAuth scopes, or Drupal entity/field access. Privileged diagnostics (Drush commands, database inspection) additionally require "administer site configuration".'
+  restrict access: false
+
+access mcp write:
+  title: 'Use MCP write operations'
+  description: 'Allows explicitly enabled MCP mutations. This additional gate never bypasses OAuth scope, allowlists, or native entity and field access.'
+  warning: 'Allows remote content mutation through MCP when an administrator explicitly enables a mutation family and target.'
+  restrict access: true

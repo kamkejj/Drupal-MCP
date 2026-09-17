@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:v2
+
+      - name: Validate Composer metadata
+        run: composer validate --strict --no-check-lock
+
+      - name: Check YAML syntax
+        run: |
+          ruby -e 'require "yaml"; (Dir["*.{yml,yaml}"] + Dir["config/**/*.{yml,yaml}"] + Dir["tests/modules/**/*.{yml,yaml}"] + Dir[".github/**/*.{yml,yaml}"]).each { |file| Psych.parse_file(file); puts file }'
+
+      - name: Install quality dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Run Drupal coding standards
+        run: |
+          vendor/bin/phpcs --config-set installed_paths vendor/drupal/coder/coder_sniffer,vendor/sirbrillig/phpcs-variable-analysis,vendor/slevomat/coding-standard
+          vendor/bin/phpcs --standard=Drupal,DrupalPractice --extensions=php,module,inc,install,test,profile,theme src tests
+
+      - name: Audit dependencies
+        run: composer audit
+
+  test:
+    name: PHPUnit
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: drupal
+          MYSQL_USER: drupal
+          MYSQL_PASSWORD: drupal
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: module
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+          extensions: gd, pdo_mysql
+          tools: composer:v2
+
+      - name: Create Drupal test project
+        run: composer create-project drupal/recommended-project:^11.4 app --no-interaction --prefer-dist --no-progress
+
+      - name: Add module repository and patch plugin
+        working-directory: app
+        run: |
+          composer config repositories.drupal-mcp path ../module
+          composer config minimum-stability dev
+          composer config prefer-stable true
+          composer config allow-plugins.cweagans/composer-patches true
+          composer require cweagans/composer-patches:^2.0 drupal/core-dev:^11.4 --dev --no-update
+          cp ../module/patches.json .
+          cp -R ../module/patches .
+
+      - name: Install Drupal MCP and verify patches
+        working-directory: app
+        run: |
+          composer require kamkejj/drupal-mcp:@dev --with-all-dependencies --no-interaction --prefer-dist --no-progress
+          grep -F "['user']" web/modules/contrib/simple_oauth/src/Access/DecoratedUserRolesAccessPolicy.php
+          test -f patches.lock.json
+
+      - name: Run unit and kernel tests
+        working-directory: app
+        env:
+          SIMPLETEST_DB: mysql://drupal:drupal@127.0.0.1/drupal
+          BROWSERTEST_OUTPUT_DIRECTORY: ${{ github.workspace }}/browser-output
+          DRUPAL_ROOT: ${{ github.workspace }}/app/web
+        run: |
+          MODULE_PATH="$(composer show kamkejj/drupal-mcp --path | awk '{print $NF}')"
+          vendor/bin/phpunit -c "$MODULE_PATH/phpunit.xml.dist" "$MODULE_PATH/tests/src/Unit" "$MODULE_PATH/tests/src/Kernel"

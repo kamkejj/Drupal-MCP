@@ -1,0 +1,44 @@
+# Default configuration for the Drupal MCP server. Diagnostics families
+# (Drush commands, database inspection) fail closed: they are disabled until a
+# site administrator explicitly enables them and approves individual commands
+# or data surfaces.
+read_scope: 'mcp:read'
+write_scope: 'mcp:write'
+# Require RFC 8707 resource-bound access tokens for the canonical /mcp URI.
+resource_binding: 'require'
+resource_uri: 'https://drupalmcp.ddev.site/mcp'
+allowed_hosts:
+  - drupalmcp.ddev.site
+allowed_origins: { }
+max_body_bytes: 1048576
+session_ttl: 3600
+idempotency_ttl: 86400
+mutation_families:
+  taxonomy: false
+writable_vocabularies: { }
+destructive_mutations:
+  taxonomy_terms: false
+pagination_limit: 20
+flood_limit: 240
+flood_window: 3600
+families:
+  site: true
+  entity_schema: true
+  content: true
+  taxonomy: true
+  blocks: true
+  menus: true
+  aliases: true
+  files: true
+  users: true
+  drush: false
+  database: false
+drush_commands: { }
+drush_config_names: { }
+database_surfaces: { }
+# Content reads fail closed: only explicitly listed node bundles are exposed
+# (an empty list is valid and yields empty results). Vocabulary term reads
+# are likewise bounded; tags ships enabled because a Standard install has it.
+node_bundles: { }
+vocabularies:
+  - tags

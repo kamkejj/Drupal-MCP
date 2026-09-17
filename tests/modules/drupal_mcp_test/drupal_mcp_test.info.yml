@@ -1,0 +1,8 @@
+name: Drupal MCP test
+type: module
+description: 'Test-only entity and field access controls for Drupal MCP kernel coverage.'
+package: Testing
+core_version_requirement: ^11
+hidden: true
+dependencies:
+  - drupal:node

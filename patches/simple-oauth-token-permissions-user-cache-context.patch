@@ -1,0 +1,39 @@
+diff --git a/src/Access/DecoratedUserRolesAccessPolicy.php b/src/Access/DecoratedUserRolesAccessPolicy.php
+--- a/src/Access/DecoratedUserRolesAccessPolicy.php
++++ b/src/Access/DecoratedUserRolesAccessPolicy.php
+@@ -39,11 +39,13 @@
+     // during configuration sync. This triggers hooks and events which can cause
+     // errors if the container is not yet fully initialized.
+     if ($this->configInstaller->isSyncing()) {
+-      return parent::calculatePermissions($account, $scope);
++      return parent::calculatePermissions($account, $scope)
++        ->addCacheContexts(['user']);
+     }
+ 
+     if (!$account instanceof TokenAuthUserInterface) {
+-      return $this->inner->calculatePermissions($account, $scope);
++      return $this->inner->calculatePermissions($account, $scope)
++        ->addCacheContexts(['user']);
+     }
+ 
+     $calculated_permissions = parent::calculatePermissions($account, $scope);
+@@ -57,14 +59,17 @@
+         ->addCacheableDependency($user_role);
+     }
+ 
+-    return $calculated_permissions;
++    return $calculated_permissions->addCacheContexts(['user']);
+   }
+ 
+   /**
+    * {@inheritdoc}
+    */
+   public function getPersistentCacheContexts(): array {
+-    return $this->inner->getPersistentCacheContexts();
++    return array_values(array_unique(array_merge(
++      $this->inner->getPersistentCacheContexts(),
++      ['user'],
++    )));
+   }
+ 
+ }

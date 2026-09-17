@@ -1,0 +1,214 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Drupal\drupal_mcp\Tool;
+
+use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Menu\MenuLinkTreeInterface;
+use Drupal\Core\Menu\MenuTreeParameters;
+use Drupal\Core\Session\AccountProxyInterface;
+use Drupal\drupal_mcp\Entity\AccessibleEntityPager;
+use Drupal\drupal_mcp\Mcp\Limits;
+use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
+use Drupal\Core\Url;
+use Mcp\Exception\ToolCallException;
+use Mcp\Schema\ToolAnnotations;
+
+/**
+ * Menu tree and path alias inspection tools.
+ *
+ * Menu trees are evaluated with core's link access manipulator so
+ * administrative or otherwise inaccessible links never appear. Aliases are
+ * administrative configuration and fail closed behind the native permission.
+ */
+final class NavigationToolProvider implements ToolProviderInterface {
+
+  /**
+   * Maximum number of links one menu response may contain.
+   */
+  private const MAX_MENU_LINKS = 200;
+
+  public function __construct(
+    private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly MenuLinkTreeInterface $menuLinkTree,
+    private readonly AccountProxyInterface $currentUser,
+    private readonly ConfigFactoryInterface $configFactory,
+    private readonly AccessibleEntityPager $pager,
+  ) {}
+
+  /**
+   * {@inheritdoc}
+   */
+  public function tools(): array {
+    return [
+      new ToolDefinition(
+        name: 'drupal_menu_get',
+        title: 'Read menu tree',
+        description: 'Returns one menu\'s tree of links as visible to the caller. Inaccessible links are removed by Drupal\'s menu link access evaluation; raw plugin-defined admin links stay hidden unless the caller may see them.',
+        inputSchema: [
+          'type' => 'object',
+          'properties' => (object) [
+            'menu' => ['type' => 'string', 'description' => 'Menu machine name, e.g. "main", "footer", "account".'],
+            'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 9],
+          ],
+          'required' => ['menu'],
+          'additionalProperties' => FALSE,
+        ],
+        handler: fn (array $args): array => $this->menuGet($args['menu'], isset($args['max_depth']) ? (int) $args['max_depth'] : NULL),
+        family: 'menus',
+        annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
+      ),
+      new ToolDefinition(
+        name: 'drupal_aliases_list',
+        title: 'List path aliases',
+        description: 'Pages through path aliases whose targets the caller can access. Administrative: requires the "administer url aliases" permission; this fails closed because alias entities have no view access of their own.',
+        inputSchema: [
+          'type' => 'object',
+          'properties' => (object) [
+            'cursor' => ['type' => 'string', 'description' => 'Opaque cursor returned by the previous page.'],
+            'limit' => ['type' => 'integer', 'minimum' => 1],
+            'alias_prefix' => ['type' => 'string'],
+          ],
+          'additionalProperties' => FALSE,
+        ],
+        handler: fn (array $args): array => $this->aliasesList(
+          $args['cursor'] ?? NULL,
+          isset($args['limit']) ? (int) $args['limit'] : NULL,
+          $args['alias_prefix'] ?? NULL,
+        ),
+        family: 'aliases',
+        extraPermissions: ['administer url aliases'],
+        annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
+      ),
+    ];
+  }
+
+  /**
+   * Executes the operation.
+   *
+   * @return array<string, mixed>
+   *   The operation result.
+   */
+  private function menuGet(string $menu, ?int $maxDepth): array {
+    if ($this->entityTypeManager->getStorage('menu')->load($menu) === NULL) {
+      throw new ToolCallException(sprintf('Unknown menu "%s".', $menu));
+    }
+
+    // Neutral parameters: route-derived parameters would prune every submenu
+    // whose parent is not flagged "expanded", because the MCP endpoint route
+    // is never part of an active menu trail.
+    $parameters = (new MenuTreeParameters())->onlyEnabledLinks();
+    if ($maxDepth !== NULL) {
+      $parameters->setMaxDepth($maxDepth);
+    }
+    $elements = $this->menuLinkTree->load($menu, $parameters);
+    $manipulators = [
+      ['callable' => 'menu.default_tree_manipulators:checkAccess'],
+      ['callable' => 'menu.default_tree_manipulators:generateIndexAndSort'],
+    ];
+    $elements = $this->menuLinkTree->transform($elements, $manipulators);
+
+    $state = new \stdClass();
+    $links = $this->projectTree($elements, $state);
+    return [
+      'menu' => $menu,
+      'links' => $links,
+      'link_count' => $state->count ?? 0,
+      'truncated' => $state->truncated ?? FALSE,
+    ];
+  }
+
+  /**
+   * Projects accessible menu-link tree elements.
+   *
+   * @param \Drupal\Core\Menu\MenuLinkTreeElement[] $elements
+   *   Transformed menu-link tree elements.
+   * @param \stdClass $state
+   *   Accumulator carrying the emitted-link count and truncation flag.
+   *
+   * @return list<array<string, mixed>>
+   *   Accessible menu-link projections.
+   */
+  private function projectTree(array $elements, \stdClass $state): array {
+    $out = [];
+    foreach ($elements as $element) {
+      if (($state->count ?? 0) >= self::MAX_MENU_LINKS) {
+        $state->truncated = TRUE;
+        return $out;
+      }
+      if (!$element->access->isAllowed()) {
+        continue;
+      }
+      $link = $element->link;
+      $url = $link->getUrlObject();
+      $entry = [
+        'plugin_id' => $link->getPluginId(),
+        'title' => (string) $link->getTitle(),
+        'description' => $link->getDescription() ?: NULL,
+        'enabled' => $link->isEnabled(),
+        'weight' => $link->getWeight(),
+        'url' => $url->isRouted() ? $url->toString() : NULL,
+        'external_url' => $url->isRouted() ? NULL : $url->toString(),
+      ];
+      $state->count = ($state->count ?? 0) + 1;
+      if ($element->subtree !== []) {
+        $entry['children'] = $this->projectTree($element->subtree, $state);
+      }
+      $out[] = $entry;
+    }
+    return $out;
+  }
+
+  /**
+   * Executes the operation.
+   *
+   * @return array<string, mixed>
+   *   The operation result.
+   */
+  private function aliasesList(?string $cursor, ?int $limit, ?string $aliasPrefix): array {
+    $pageLimit = Limits::clamp($this->configFactory, $limit);
+    $storage = $this->entityTypeManager->getStorage('path_alias');
+    $account = $this->currentUser->getAccount();
+    $page = $this->pager->page(
+      $storage,
+      $account,
+      $cursor,
+      $pageLimit,
+      json_encode(['aliases', $aliasPrefix], JSON_THROW_ON_ERROR),
+      function (int $offset, int $length) use ($storage, $aliasPrefix): array {
+        $query = $storage->getQuery()
+          ->accessCheck(FALSE)
+          ->sort('id', 'ASC')
+          ->range($offset, $length);
+        if ($aliasPrefix !== NULL) {
+          $query->condition('alias', $aliasPrefix . '%', 'LIKE');
+        }
+        return $query->execute();
+      },
+      function ($alias) use ($account): ?array {
+        /** @var \Drupal\path_alias\PathAliasInterface $alias */
+        $path = '/' . ltrim((string) $alias->getPath(), '/');
+        try {
+          $url = Url::fromUri('internal:' . $path);
+          if (!$url->access($account)) {
+            return NULL;
+          }
+        }
+        catch (\Throwable) {
+          return NULL;
+        }
+        return [
+          'id' => (int) $alias->id(),
+          'alias' => '/' . ltrim((string) $alias->getAlias(), '/'),
+          'path' => $path,
+          'langcode' => $alias->language()->getId(),
+        ];
+      },
+    );
+    return ['limit' => $pageLimit] + $page;
+  }
+
+}

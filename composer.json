@@ -1,0 +1,46 @@
+{
+    "name": "kamkejj/drupal-mcp",
+    "description": "A secure, bounded, read-only Model Context Protocol server for Drupal.",
+    "type": "drupal-module",
+    "license": "GPL-2.0-or-later",
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://packages.drupal.org/8"
+        }
+    ],
+    "require": {
+        "php": ">=8.3",
+        "drupal/core": "^11.4",
+        "drupal/simple_oauth": "^6.1",
+        "e0ipso/simple_oauth_21": "^1.13",
+        "mcp/sdk": "^0.8.1"
+    },
+    "require-dev": {
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+        "drupal/coder": "^8.3.30",
+        "drupal/core-dev": "^11.4",
+        "cweagans/composer-patches": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Drupal\\drupal_mcp\\": "src/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "composer/installers": true,
+            "cweagans/composer-patches": true,
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "drupal/core-composer-scaffold": true,
+            "php-http/discovery": true,
+            "phpstan/extension-installer": true,
+            "symfony/runtime": true
+        },
+        "sort-packages": true
+    },
+    "extra": {
+        "composer-exit-on-patch-failure": true,
+        "enable-patching": true
+    }
+}

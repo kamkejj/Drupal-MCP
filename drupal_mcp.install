@@ -1,0 +1,32 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for the Drupal MCP module.
+ */
+
+declare(strict_types=1);
+
+/**
+ * Adds fail-closed taxonomy mutation settings.
+ */
+function drupal_mcp_update_11001(): void {
+  $config = \Drupal::configFactory()->getEditable('drupal_mcp.settings');
+  if ($config->get('mutation_families.taxonomy') === NULL) {
+    $config->set('mutation_families.taxonomy', FALSE);
+  }
+  if ($config->get('writable_vocabularies') === NULL) {
+    $config->set('writable_vocabularies', []);
+  }
+  if ($config->get('destructive_mutations.taxonomy_terms') === NULL) {
+    $config->set('destructive_mutations.taxonomy_terms', FALSE);
+  }
+  $config->save(TRUE);
+}
+
+/**
+ * Removes only module-owned operational idempotency state.
+ */
+function drupal_mcp_uninstall(): void {
+  \Drupal::service('keyvalue.expirable')->get('drupal_mcp_idempotency')->deleteAll();
+}

@@ -1,0 +1,925 @@
+diff --git a/src/Entities/ResourceRestrictedTokenInterface.php b/src/Entities/ResourceRestrictedTokenInterface.php
+new file mode 100644
+index 0000000..708f26c
+--- /dev/null
++++ b/src/Entities/ResourceRestrictedTokenInterface.php
+@@ -0,0 +1,35 @@
++<?php
++
++/**
++ * @author      Alex Bilbie <hello@alexbilbie.com>
++ * @copyright   Copyright (c) Alex Bilbie
++ * @license     http://mit-license.org/
++ *
++ * @link        https://github.com/thephpleague/oauth2-server
++ */
++
++declare(strict_types=1);
++
++namespace League\OAuth2\Server\Entities;
++
++/**
++ * Opt-in extension for token entities that carry RFC 8707 resource
++ * restrictions.
++ *
++ * Implementing this interface is optional: {@see TokenInterface} remains the
++ * canonical contract and existing consumer implementations continue to work
++ * without modification. Grants check for this interface via `instanceof` when
++ * propagating resource indicators through the token flow.
++ */
++interface ResourceRestrictedTokenInterface
++{
++    /**
++     * @return list<non-empty-string> The absolute URIs of the resources this token is bound to.
++     */
++    public function getResources(): array;
++
++    /**
++     * @param list<non-empty-string> $resources
++     */
++    public function setResources(array $resources): void;
++}
+diff --git a/src/Entities/Traits/ResourceRestrictedTokenTrait.php b/src/Entities/Traits/ResourceRestrictedTokenTrait.php
+new file mode 100644
+index 0000000..dc6e734
+--- /dev/null
++++ b/src/Entities/Traits/ResourceRestrictedTokenTrait.php
+@@ -0,0 +1,40 @@
++<?php
++
++/**
++ * @author      Alex Bilbie <hello@alexbilbie.com>
++ * @copyright   Copyright (c) Alex Bilbie
++ * @license     http://mit-license.org/
++ *
++ * @link        https://github.com/thephpleague/oauth2-server
++ */
++
++declare(strict_types=1);
++
++namespace League\OAuth2\Server\Entities\Traits;
++
++/**
++ * Default in-memory implementation of {@see \League\OAuth2\Server\Entities\ResourceRestrictedTokenInterface}.
++ */
++trait ResourceRestrictedTokenTrait
++{
++    /**
++     * @var list<non-empty-string>
++     */
++    private array $resources = [];
++
++    /**
++     * @return list<non-empty-string>
++     */
++    public function getResources(): array
++    {
++        return $this->resources;
++    }
++
++    /**
++     * @param list<non-empty-string> $resources
++     */
++    public function setResources(array $resources): void
++    {
++        $this->resources = $resources;
++    }
++}
+diff --git a/src/Exception/OAuthServerException.php b/src/Exception/OAuthServerException.php
+index df8b58a..f361ae7 100644
+--- a/src/Exception/OAuthServerException.php
++++ b/src/Exception/OAuthServerException.php
+@@ -265,6 +265,25 @@ class OAuthServerException extends Exception
+         );
+     }
+ 
++    /**
++     * Invalid target error.
++     *
++     * The requested resource is invalid, missing, unknown, or malformed.
++     *
++     * @see https://datatracker.ietf.org/doc/html/rfc8707#section-2
++     */
++    public static function invalidTarget(?string $hint = null, ?string $redirectUri = null): static
++    {
++        return new static(
++            'The requested resource is invalid, missing, unknown, or malformed.',
++            15,
++            'invalid_target',
++            400,
++            $hint,
++            $redirectUri
++        );
++    }
++
+     /**
+      * Generate a HTTP response.
+      */
+diff --git a/src/Grant/AbstractAuthorizeGrant.php b/src/Grant/AbstractAuthorizeGrant.php
+index 7b44016..0fde6a8 100644
+--- a/src/Grant/AbstractAuthorizeGrant.php
++++ b/src/Grant/AbstractAuthorizeGrant.php
+@@ -17,6 +17,8 @@ namespace League\OAuth2\Server\Grant;
+ use League\OAuth2\Server\Entities\ClientEntityInterface;
+ use League\OAuth2\Server\RequestTypes\AuthorizationRequest;
+ use League\OAuth2\Server\RequestTypes\AuthorizationRequestInterface;
++use League\OAuth2\Server\RequestTypes\ResourceIndicatorAwareInterface;
++use LogicException;
+ 
+ use function http_build_query;
+ 
+@@ -46,4 +48,44 @@ abstract class AbstractAuthorizeGrant extends AbstractGrant
+             ? $client->getRedirectUri()[0]
+             : $client->getRedirectUri();
+     }
++
++    /**
++     * Propagate RFC 8707 `resource` parameters through the authorization
++     * request. The ship-with {@see AuthorizationRequest} implements
++     * {@see ResourceIndicatorAwareInterface}, so the fallback branch only
++     * fires for custom implementations that override
++     * {@see createAuthorizationRequest()} to return a non-aware instance.
++     *
++     * When the client sent a `resource` parameter but the authorization
++     * request implementation cannot carry it, that is a library-level
++     * misconfiguration (the consumer wired up a custom auth-request type
++     * without opting into {@see ResourceIndicatorAwareInterface}), not a
++     * protocol error. A {@see LogicException} is raised to fail fast in
++     * development rather than surfacing an `invalid_target` redirect to the
++     * end-user — mirroring the analogous taxonomy in
++     * {@see AbstractGrant::applyResourceIndicators()}.
++     *
++     * @param list<non-empty-string> $resources
++     *
++     * @throws LogicException When the request implementation cannot accept
++     *                        resource indicators but the client supplied one.
++     */
++    protected function applyResourcesToAuthorizationRequest(
++        AuthorizationRequestInterface $authorizationRequest,
++        array $resources
++    ): void {
++        if ($authorizationRequest instanceof ResourceIndicatorAwareInterface) {
++            $authorizationRequest->setResources($resources);
++
++            return;
++        }
++
++        if ($resources !== []) {
++            throw new LogicException(
++                'The authorization request implementation must implement '
++                . ResourceIndicatorAwareInterface::class
++                . ' to support RFC 8707 resource indicators.'
++            );
++        }
++    }
+ }
+diff --git a/src/Grant/AbstractGrant.php b/src/Grant/AbstractGrant.php
+index 7c27e95..cfc3c40 100644
+--- a/src/Grant/AbstractGrant.php
++++ b/src/Grant/AbstractGrant.php
+@@ -25,6 +25,7 @@ use League\OAuth2\Server\Entities\AccessTokenEntityInterface;
+ use League\OAuth2\Server\Entities\AuthCodeEntityInterface;
+ use League\OAuth2\Server\Entities\ClientEntityInterface;
+ use League\OAuth2\Server\Entities\RefreshTokenEntityInterface;
++use League\OAuth2\Server\Entities\ResourceRestrictedTokenInterface;
+ use League\OAuth2\Server\Entities\ScopeEntityInterface;
+ use League\OAuth2\Server\EventEmitting\EmitterAwarePolyfill;
+ use League\OAuth2\Server\Exception\OAuthServerException;
+@@ -40,6 +41,8 @@ use League\OAuth2\Server\RequestEvent;
+ use League\OAuth2\Server\RequestTypes\AuthorizationRequestInterface;
+ use League\OAuth2\Server\ResponseTypes\DeviceCodeResponse;
+ use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
++use League\Uri\Exceptions\SyntaxError;
++use League\Uri\Uri;
+ use LogicException;
+ use Psr\Http\Message\ServerRequestInterface;
+ use TypeError;
+@@ -49,6 +52,7 @@ use function array_key_exists;
+ use function base64_decode;
+ use function bin2hex;
+ use function explode;
++use function is_array;
+ use function is_string;
+ use function random_bytes;
+ use function substr;
+@@ -289,6 +293,179 @@ abstract class AbstractGrant implements GrantTypeInterface
+         return array_filter(explode(self::SCOPE_DELIMITER_STRING, trim($scopes)), static fn ($scope) => $scope !== '');
+     }
+ 
++    /**
++     * Apply RFC 8707 resource indicators as resource restrictions on an
++     * access token that has been built by {@see buildAccessToken()} but not
++     * yet persisted. Call this before {@see persistAccessToken()} so the
++     * misconfiguration branch below fails fast and never leaves an orphaned
++     * row behind in the token repository.
++     *
++     * @param list<non-empty-string> $resources
++     *
++     * @throws LogicException When resources are supplied but the entity does
++     *                        not implement {@see ResourceRestrictedTokenInterface}.
++     *                        This is a library-level misconfiguration, not a
++     *                        protocol error, hence a programmer exception.
++     */
++    protected function applyResourceIndicators(AccessTokenEntityInterface $accessToken, array $resources): void
++    {
++        if ($resources === []) {
++            // Intentional no-op: grants that do not process resource
++            // indicators, or whose client omitted the `resource` parameter,
++            // still call this method unconditionally. Short-circuiting here
++            // lets them remain oblivious to the feature.
++            return;
++        }
++
++        if (!$accessToken instanceof ResourceRestrictedTokenInterface) {
++            throw new LogicException(
++                'The access token entity must implement '
++                . ResourceRestrictedTokenInterface::class
++                . ' to support RFC 8707 resource indicators.'
++            );
++        }
++
++        $accessToken->setResources($resources);
++    }
++
++    /**
++     * Apply RFC 8707 narrowing rules when issuing or refreshing a token.
++     *
++     * @param list<non-empty-string> $authorized
++     * @param list<non-empty-string> $requested
++     *
++     * @throws OAuthServerException
++     *
++     * @return list<non-empty-string>
++     */
++    protected function resolveTokenEndpointResources(array $authorized, array $requested): array
++    {
++        if ($requested === []) {
++            return $authorized;
++        }
++
++        if ($authorized === [] || array_diff($requested, $authorized) !== []) {
++            throw OAuthServerException::invalidTarget(
++                'Requested resource exceeds the previously authorized resource set'
++            );
++        }
++
++        return $requested;
++    }
++
++    /**
++     * Parse and validate repeatable `resource` parameters per RFC 8707.
++     *
++     * Accepts either a single string or an array (PSR-7 normalizes repeated
++     * query/body params to arrays). Each entry must be an absolute URI without
++     * a fragment component.
++     *
++     * @param string|array<array-key, mixed>|null $raw Value as returned by
++     *                                                 {@see getRawRequestParameter()} / {@see getRawQueryStringParameter()}.
++     *
++     * @throws OAuthServerException When any entry is not a valid absolute URI.
++     *
++     * @return list<non-empty-string> The normalized list of resource indicators (empty if none provided).
++     */
++    protected function parseResourceIndicators(string|array|null $raw, ?string $redirectUri = null): array
++    {
++        if ($raw === null || $raw === '' || $raw === []) {
++            return [];
++        }
++
++        $values = is_string($raw) ? [$raw] : $raw;
++        $resources = [];
++
++        foreach ($values as $value) {
++            $resources[] = $this->validateResourceIndicator($value, $redirectUri);
++        }
++
++        return $resources;
++    }
++
++    /**
++     * Validate a single RFC 8707 `resource` entry as an absolute URI without
++     * a fragment component.
++     *
++     * No trimming is performed: leading or trailing whitespace is treated as
++     * an invalid indicator rather than silently normalized. This keeps the
++     * exact-string comparison in
++     * {@see AuthCodeGrant::resolveTokenEndpointResources()} symmetric — the
++     * value stored in the auth code payload and the value presented at the
++     * token endpoint must both survive this method unchanged.
++     *
++     * @throws OAuthServerException
++     *
++     * @return non-empty-string
++     */
++    private function validateResourceIndicator(mixed $value, ?string $redirectUri): string
++    {
++        if (!is_string($value)) {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must be a string',
++                $redirectUri
++            );
++        }
++
++        if ($value === '') {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must not be empty',
++                $redirectUri
++            );
++        }
++
++        if ($value !== trim($value)) {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must not contain leading or trailing whitespace',
++                $redirectUri
++            );
++        }
++
++        try {
++            $uri = Uri::new($value);
++        } catch (SyntaxError) {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must be a valid URI',
++                $redirectUri
++            );
++        }
++
++        $scheme = $uri->getScheme();
++        if ($scheme === null || $scheme === '') {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must be an absolute URI',
++                $redirectUri
++            );
++        }
++
++        $fragment = $uri->getFragment();
++        if ($fragment !== null && $fragment !== '') {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must not contain a fragment component',
++                $redirectUri
++            );
++        }
++
++        // RFC 8707 §2: the resource URI must not contain credentials; a
++        // `userinfo` component (e.g. `https://user:pass@api.example.com/`)
++        // would leak through the token response into logs and audit trails.
++        $userInfo = $uri->getUserInfo();
++        if ($userInfo !== null && $userInfo !== '') {
++            throw OAuthServerException::invalidTarget(
++                'Resource indicator must not contain a userinfo component',
++                $redirectUri
++            );
++        }
++
++        // RFC 8707 §2 says the URI "SHOULD NOT" include a query component.
++        // We deliberately allow it: some APIs version themselves through
++        // query strings (`https://api.example.com/?version=2`), and the
++        // "SHOULD NOT" strength leaves the decision to the authorization
++        // server. A future release may gate this behind a flag.
++
++        return $value;
++    }
++
+     /**
+      * Parse request parameter.
+      *
+@@ -331,6 +508,50 @@ abstract class AbstractGrant implements GrantTypeInterface
+         return self::parseParam($parameter, (array) $request->getParsedBody(), $default);
+     }
+ 
++    /**
++     * Retrieve a raw request parameter without coercion. Used for parameters
++     * that may legitimately be repeated (and thus arrive as arrays), such as
++     * the RFC 8707 `resource` parameter.
++     *
++     * @throws OAuthServerException When the value is neither null, string, nor array.
++     *
++     * @return string|array<array-key, mixed>|null
++     */
++    protected function getRawRequestParameter(string $parameter, ServerRequestInterface $request): string|array|null
++    {
++        return $this->extractRawParameterValue((array) $request->getParsedBody(), $parameter);
++    }
++
++    /**
++     * Retrieve a raw query string parameter without coercion.
++     *
++     * @throws OAuthServerException When the value is neither null, string, nor array.
++     *
++     * @return string|array<array-key, mixed>|null
++     */
++    protected function getRawQueryStringParameter(string $parameter, ServerRequestInterface $request): string|array|null
++    {
++        return $this->extractRawParameterValue($request->getQueryParams(), $parameter);
++    }
++
++    /**
++     * @param array<array-key, mixed> $source
++     *
++     * @throws OAuthServerException When the value is neither null, string, nor array.
++     *
++     * @return string|array<array-key, mixed>|null
++     */
++    private function extractRawParameterValue(array $source, string $parameter): string|array|null
++    {
++        $value = $source[$parameter] ?? null;
++
++        if ($value === null || is_string($value) || is_array($value)) {
++            return $value;
++        }
++
++        throw OAuthServerException::invalidRequest($parameter);
++    }
++
+     /**
+      * Retrieve HTTP Basic Auth credentials with the Authorization header
+      * of a request. First index of the returned array is the username,
+@@ -420,12 +641,43 @@ abstract class AbstractGrant implements GrantTypeInterface
+         string|null $userIdentifier,
+         array $scopes = []
+     ): AccessTokenEntityInterface {
+-        $maxGenerationAttempts = self::MAX_RANDOM_TOKEN_GENERATION_ATTEMPTS;
++        return $this->persistAccessToken(
++            $this->buildAccessToken($accessTokenTTL, $client, $userIdentifier, $scopes)
++        );
++    }
+ 
++    /**
++     * Build and configure an access token entity without persisting it. Grants
++     * that need to apply additional configuration (e.g. RFC 8707 resource
++     * indicators) before the token hits storage can call this method, mutate
++     * the returned entity, and then hand it to {@see persistAccessToken()}.
++     *
++     * @param ScopeEntityInterface[] $scopes
++     */
++    protected function buildAccessToken(
++        DateInterval $accessTokenTTL,
++        ClientEntityInterface $client,
++        string|null $userIdentifier,
++        array $scopes = []
++    ): AccessTokenEntityInterface {
+         $accessToken = $this->accessTokenRepository->getNewToken($client, $scopes, $userIdentifier);
+         $accessToken->setExpiryDateTime((new DateTimeImmutable())->add($accessTokenTTL));
+         $accessToken->setPrivateKey($this->privateKey);
+ 
++        return $accessToken;
++    }
++
++    /**
++     * Persist a fully configured access token entity, retrying on unique
++     * identifier collisions.
++     *
++     * @throws OAuthServerException
++     * @throws UniqueTokenIdentifierConstraintViolationException
++     */
++    protected function persistAccessToken(AccessTokenEntityInterface $accessToken): AccessTokenEntityInterface
++    {
++        $maxGenerationAttempts = self::MAX_RANDOM_TOKEN_GENERATION_ATTEMPTS;
++
+         while ($maxGenerationAttempts-- > 0) {
+             $accessToken->setIdentifier($this->generateUniqueIdentifier());
+             try {
+diff --git a/src/Grant/AuthCodeGrant.php b/src/Grant/AuthCodeGrant.php
+index b9625f5..20332d9 100644
+--- a/src/Grant/AuthCodeGrant.php
++++ b/src/Grant/AuthCodeGrant.php
+@@ -25,15 +25,18 @@ use League\OAuth2\Server\Exception\OAuthServerException;
+ use League\OAuth2\Server\Repositories\AuthCodeRepositoryInterface;
+ use League\OAuth2\Server\Repositories\RefreshTokenRepositoryInterface;
+ use League\OAuth2\Server\RequestAccessTokenEvent;
++use League\OAuth2\Server\RequestAccessTokenResourcesEvent;
+ use League\OAuth2\Server\RequestEvent;
+ use League\OAuth2\Server\RequestRefreshTokenEvent;
+ use League\OAuth2\Server\RequestTypes\AuthorizationRequestInterface;
++use League\OAuth2\Server\RequestTypes\ResourceIndicatorAwareInterface;
+ use League\OAuth2\Server\ResponseTypes\RedirectResponse;
+ use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
+ use LogicException;
+ use Psr\Http\Message\ServerRequestInterface;
+ use stdClass;
+ 
++use function array_diff;
+ use function array_key_exists;
+ use function array_keys;
+ use function array_map;
+@@ -42,6 +45,7 @@ use function hash_algos;
+ use function implode;
+ use function in_array;
+ use function is_array;
++use function is_string;
+ use function json_decode;
+ use function json_encode;
+ use function preg_match;
+@@ -137,8 +141,35 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
+             $this->validateCodeChallenge($authCodePayload, $codeVerifier);
+         }
+ 
+-        // Issue and persist new access token
+-        $accessToken = $this->issueAccessToken($accessTokenTTL, $client, $authCodePayload->user_id, $scopes);
++        // RFC 8707: parse `resource` parameters and narrow against the authorized set
++        $authorizedResources = $this->extractAuthCodeResources($authCodePayload);
++        $requestedResources = $this->parseResourceIndicators(
++            $this->getRawRequestParameter('resource', $request)
++        );
++        $resources = $this->resolveTokenEndpointResources($authorizedResources, $requestedResources);
++
++        // Build → apply resources → persist, in that order. applyResourceIndicators()
++        // throws LogicException when the access token entity does not implement
++        // ResourceRestrictedTokenInterface; running it before persistAccessToken()
++        // ensures a misconfigured consumer fails fast without leaving an orphaned
++        // row in the token repository.
++        $accessToken = $this->buildAccessToken($accessTokenTTL, $client, $authCodePayload->user_id, $scopes);
++        $resourcesEvent = new RequestAccessTokenResourcesEvent(
++            RequestEvent::ACCESS_TOKEN_RESOURCES_RESOLVING,
++            $request,
++            $accessToken,
++            $resources
++        );
++        $this->getEmitter()->emit($resourcesEvent);
++
++        if ($resourcesEvent->isRequestDenied()) {
++            throw OAuthServerException::accessDenied($resourcesEvent->getDenyReason());
++        }
++
++        $resources = $resourcesEvent->getResources();
++        $this->applyResourceIndicators($accessToken, $resources);
++        $accessToken = $this->persistAccessToken($accessToken);
++
+         $this->getEmitter()->emit(new RequestAccessTokenEvent(RequestEvent::ACCESS_TOKEN_ISSUED, $request, $accessToken));
+         $responseType->setAccessToken($accessToken);
+ 
+@@ -156,6 +187,76 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
+         return $responseType;
+     }
+ 
++    /**
++     * Extract the RFC 8707 resource indicators persisted in the auth code
++     * payload. Older payloads that predate the RFC 8707 implementation will
++     * not carry this field, so a missing property is treated as "no resource
++     * restriction was asserted during authorization". Anything else (non-list
++     * data, non-string entries, empty entries) is a tampered or corrupted
++     * payload and must abort the exchange — silently dropping malformed
++     * entries would strip a resource restriction that the authorization
++     * step explicitly asserted.
++     *
++     * @throws OAuthServerException
++     *
++     * @return list<non-empty-string>
++     */
++    private function extractAuthCodeResources(stdClass $authCodePayload): array
++    {
++        if (!property_exists($authCodePayload, 'resources')) {
++            return [];
++        }
++
++        $resources = $authCodePayload->resources;
++
++        if (!is_array($resources)) {
++            throw OAuthServerException::invalidGrant('Authorization code malformed');
++        }
++
++        $normalized = [];
++
++        foreach ($resources as $resource) {
++            if (!is_string($resource) || $resource === '') {
++                throw OAuthServerException::invalidGrant('Authorization code malformed');
++            }
++
++            $normalized[] = $resource;
++        }
++
++        return $normalized;
++    }
++
++    /**
++     * Apply RFC 8707 §2.2 narrowing rules for the token endpoint.
++     *
++     * If the client supplied `resource` parameters at the token endpoint, each
++     * must be a subset of the set authorized by the auth code. If the client
++     * omits `resource`, we carry the full authorized set through to the issued
++     * access token.
++     *
++     * Policy when the auth code carries no authorized resources but the token
++     * request supplies one: rejected with `invalid_target`. RFC 8707 §2.2
++     * permits servers to fall back to "all resources the client is authorized
++     * to access", which could be interpreted as allowing first-time resource
++     * indication at the token endpoint. This library takes the conservative
++     * stance of requiring the resource set to be established at `/authorize`,
++     * so resource restrictions cannot be tightened *or* introduced under a
++     * previously unrestricted authorization code.
++     *
++     * URI comparison follows RFC 3986 §6.2.1 "Simple String Comparison" — the
++     * byte sequences must match exactly. Clients are expected to send the
++     * same canonical form at `/authorize` and `/token`; this library does
++     * not perform scheme/host lower-casing or default-port normalization, so
++     * `https://api.example.com/` and `https://api.example.com` are considered
++     * distinct.
++     *
++     * @param list<non-empty-string> $authorized
++     * @param list<non-empty-string> $requested
++     *
++     * @throws OAuthServerException
++     *
++     * @return list<non-empty-string>
++     */
+     private function validateCodeChallenge(object $authCodePayload, ?string $codeVerifier): void
+     {
+         if ($codeVerifier === null) {
+@@ -281,12 +382,19 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
+ 
+         $stateParameter = $this->getQueryStringParameter('state', $request);
+ 
++        $finalRedirectUri = $this->makeRedirectUri(
++            $redirectUri ?? $this->getClientRedirectUri($client),
++            $stateParameter !== null ? ['state' => $stateParameter] : []
++        );
++
+         $scopes = $this->validateScopes(
+             $this->getQueryStringParameter('scope', $request, $this->defaultScope),
+-            $this->makeRedirectUri(
+-                $redirectUri ?? $this->getClientRedirectUri($client),
+-                $stateParameter !== null ? ['state' => $stateParameter] : []
+-            )
++            $finalRedirectUri
++        );
++
++        $resources = $this->parseResourceIndicators(
++            $this->getRawQueryStringParameter('resource', $request),
++            $finalRedirectUri
+         );
+ 
+         $authorizationRequest = $this->createAuthorizationRequest();
+@@ -294,6 +402,8 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
+         $authorizationRequest->setClient($client);
+         $authorizationRequest->setRedirectUri($redirectUri);
+ 
++        $this->applyResourcesToAuthorizationRequest($authorizationRequest, $resources);
++
+         if ($stateParameter !== null) {
+             $authorizationRequest->setState($stateParameter);
+         }
+@@ -373,6 +483,9 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
+                 'expire_time'           => (new DateTimeImmutable())->add($this->authCodeTTL)->getTimestamp(),
+                 'code_challenge'        => $authorizationRequest->getCodeChallenge(),
+                 'code_challenge_method' => $authorizationRequest->getCodeChallengeMethod(),
++                'resources'             => $authorizationRequest instanceof ResourceIndicatorAwareInterface
++                    ? $authorizationRequest->getResources()
++                    : [],
+             ];
+ 
+             $jsonPayload = json_encode($payload);
+diff --git a/src/Grant/RefreshTokenGrant.php b/src/Grant/RefreshTokenGrant.php
+index 9140274..46dac46 100644
+--- a/src/Grant/RefreshTokenGrant.php
++++ b/src/Grant/RefreshTokenGrant.php
+@@ -19,6 +19,7 @@ use Exception;
+ use League\OAuth2\Server\Exception\OAuthServerException;
+ use League\OAuth2\Server\Repositories\RefreshTokenRepositoryInterface;
+ use League\OAuth2\Server\RequestAccessTokenEvent;
++use League\OAuth2\Server\RequestAccessTokenResourcesEvent;
+ use League\OAuth2\Server\RequestEvent;
+ use League\OAuth2\Server\RequestRefreshTokenEvent;
+ use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
+@@ -76,14 +77,36 @@ class RefreshTokenGrant extends AbstractGrant
+ 
+         $scopes = $this->scopeRepository->finalizeScopes($scopes, $this->getIdentifier(), $client, $userId);
+ 
++        $authorizedResources = $oldRefreshToken['resources'] ?? [];
++        if (!is_array($authorizedResources)) {
++            throw OAuthServerException::invalidRefreshToken('Token resource restrictions are malformed');
++        }
++        $requestedResources = $this->parseResourceIndicators(
++            $this->getRawRequestParameter('resource', $request)
++        );
++        $resources = $this->resolveTokenEndpointResources($authorizedResources, $requestedResources);
++
+         // Expire old tokens
+         $this->accessTokenRepository->revokeAccessToken($oldRefreshToken['access_token_id']);
+         if ($this->revokeRefreshTokens) {
+             $this->refreshTokenRepository->revokeRefreshToken($oldRefreshToken['refresh_token_id']);
+         }
+ 
+-        // Issue and persist new access token
+-        $accessToken = $this->issueAccessToken($accessTokenTTL, $client, $userId, $scopes);
++        // Issue and persist new access token with the original or narrowed
++        // resource restrictions.
++        $accessToken = $this->buildAccessToken($accessTokenTTL, $client, $userId, $scopes);
++        $resourcesEvent = new RequestAccessTokenResourcesEvent(
++            RequestEvent::ACCESS_TOKEN_RESOURCES_RESOLVING,
++            $request,
++            $accessToken,
++            $resources
++        );
++        $this->getEmitter()->emit($resourcesEvent);
++        if ($resourcesEvent->isRequestDenied()) {
++            throw OAuthServerException::accessDenied($resourcesEvent->getDenyReason());
++        }
++        $this->applyResourceIndicators($accessToken, $resourcesEvent->getResources());
++        $accessToken = $this->persistAccessToken($accessToken);
+         $this->getEmitter()->emit(new RequestAccessTokenEvent(RequestEvent::ACCESS_TOKEN_ISSUED, $request, $accessToken));
+         $responseType->setAccessToken($accessToken);
+ 
+diff --git a/src/RequestAccessTokenResourcesEvent.php b/src/RequestAccessTokenResourcesEvent.php
+new file mode 100644
+index 0000000..c759a8b
+--- /dev/null
++++ b/src/RequestAccessTokenResourcesEvent.php
+@@ -0,0 +1,77 @@
++<?php
++
++/**
++ * @author      Alex Bilbie <hello@alexbilbie.com>
++ * @copyright   Copyright (c) Alex Bilbie
++ * @license     http://mit-license.org/
++ *
++ * @link        https://github.com/thephpleague/oauth2-server
++ */
++
++declare(strict_types=1);
++
++namespace League\OAuth2\Server;
++
++use League\OAuth2\Server\Entities\AccessTokenEntityInterface;
++use Psr\Http\Message\ServerRequestInterface;
++use SensitiveParameter;
++
++class RequestAccessTokenResourcesEvent extends RequestEvent
++{
++    private bool $requestDenied = false;
++
++    private ?string $denyReason = null;
++
++    /**
++     * @param list<non-empty-string> $resources
++     */
++    public function __construct(
++        string $name,
++        ServerRequestInterface $request,
++        #[SensitiveParameter]
++        private AccessTokenEntityInterface $accessToken,
++        private array $resources
++    ) {
++        parent::__construct($name, $request);
++    }
++
++    /**
++     * @codeCoverageIgnore
++     */
++    public function getAccessToken(): AccessTokenEntityInterface
++    {
++        return $this->accessToken;
++    }
++
++    /**
++     * @return list<non-empty-string>
++     */
++    public function getResources(): array
++    {
++        return $this->resources;
++    }
++
++    /**
++     * @param list<non-empty-string> $resources
++     */
++    public function setResources(array $resources): void
++    {
++        $this->resources = $resources;
++    }
++
++    public function denyRequest(?string $reason = null): void
++    {
++        $this->requestDenied = true;
++        $this->denyReason = $reason;
++    }
++
++    public function isRequestDenied(): bool
++    {
++        return $this->requestDenied;
++    }
++
++    public function getDenyReason(): ?string
++    {
++        return $this->denyReason;
++    }
++}
+diff --git a/src/RequestEvent.php b/src/RequestEvent.php
+index e88cd31..c4337bf 100644
+--- a/src/RequestEvent.php
++++ b/src/RequestEvent.php
+@@ -23,6 +23,7 @@ class RequestEvent extends AbstractEvent
+ 
+     public const REFRESH_TOKEN_ISSUED = 'refresh_token.issued';
+     public const ACCESS_TOKEN_ISSUED = 'access_token.issued';
++    public const ACCESS_TOKEN_RESOURCES_RESOLVING = 'access_token.resources.resolving';
+ 
+     public function __construct(string $name, private ServerRequestInterface $request)
+     {
+diff --git a/src/RequestTypes/AuthorizationRequest.php b/src/RequestTypes/AuthorizationRequest.php
+index 09b1156..6f34033 100644
+--- a/src/RequestTypes/AuthorizationRequest.php
++++ b/src/RequestTypes/AuthorizationRequest.php
+@@ -16,7 +16,7 @@ use League\OAuth2\Server\Entities\ClientEntityInterface;
+ use League\OAuth2\Server\Entities\ScopeEntityInterface;
+ use League\OAuth2\Server\Entities\UserEntityInterface;
+ 
+-class AuthorizationRequest implements AuthorizationRequestInterface
++class AuthorizationRequest implements AuthorizationRequestInterface, ResourceIndicatorAwareInterface
+ {
+     /**
+      * The grant type identifier
+@@ -65,6 +65,13 @@ class AuthorizationRequest implements AuthorizationRequestInterface
+      */
+     protected string $codeChallengeMethod;
+ 
++    /**
++     * The requested resource indicators (RFC 8707). Each value is an absolute URI.
++     *
++     * @var list<non-empty-string>
++     */
++    protected array $resources = [];
++
+     public function getGrantTypeId(): string
+     {
+         return $this->grantTypeId;
+@@ -160,4 +167,20 @@ class AuthorizationRequest implements AuthorizationRequestInterface
+     {
+         $this->codeChallengeMethod = $codeChallengeMethod;
+     }
++
++    /**
++     * @return list<non-empty-string>
++     */
++    public function getResources(): array
++    {
++        return $this->resources;
++    }
++
++    /**
++     * @param list<non-empty-string> $resources
++     */
++    public function setResources(array $resources): void
++    {
++        $this->resources = $resources;
++    }
+ }
+diff --git a/src/RequestTypes/ResourceIndicatorAwareInterface.php b/src/RequestTypes/ResourceIndicatorAwareInterface.php
+new file mode 100644
+index 0000000..3ab80c3
+--- /dev/null
++++ b/src/RequestTypes/ResourceIndicatorAwareInterface.php
+@@ -0,0 +1,34 @@
++<?php
++
++/**
++ * @author      Alex Bilbie <hello@alexbilbie.com>
++ * @copyright   Copyright (c) Alex Bilbie
++ * @license     http://mit-license.org/
++ *
++ * @link        https://github.com/thephpleague/oauth2-server
++ */
++
++declare(strict_types=1);
++
++namespace League\OAuth2\Server\RequestTypes;
++
++/**
++ * Opt-in extension of {@see AuthorizationRequestInterface} for implementations
++ * that carry RFC 8707 resource indicators through the authorization flow.
++ *
++ * Implementing this interface is optional; grants that support RFC 8707 check
++ * for it via `instanceof` so existing consumer implementations of the base
++ * {@see AuthorizationRequestInterface} remain backwards compatible.
++ */
++interface ResourceIndicatorAwareInterface
++{
++    /**
++     * @return list<non-empty-string> The absolute URIs of the requested resources.
++     */
++    public function getResources(): array;
++
++    /**
++     * @param list<non-empty-string> $resources
++     */
++    public function setResources(array $resources): void;
++}
+diff --git a/src/ResponseTypes/BearerTokenResponse.php b/src/ResponseTypes/BearerTokenResponse.php
+index 818d52c..c6915c8 100644
+--- a/src/ResponseTypes/BearerTokenResponse.php
++++ b/src/ResponseTypes/BearerTokenResponse.php
+@@ -15,6 +15,7 @@ declare(strict_types=1);
+ namespace League\OAuth2\Server\ResponseTypes;
+ 
+ use League\OAuth2\Server\Entities\AccessTokenEntityInterface;
++use League\OAuth2\Server\Entities\ResourceRestrictedTokenInterface;
+ use LogicException;
+ use Psr\Http\Message\ResponseInterface;
+ use SensitiveParameter;
+@@ -43,6 +44,9 @@ class BearerTokenResponse extends AbstractResponseType
+                     'scopes'           => $this->accessToken->getScopes(),
+                     'user_id'          => $this->accessToken->getUserIdentifier(),
+                     'expire_time'      => $this->refreshToken->getExpiryDateTime()->getTimestamp(),
++                    'resources'        => $this->accessToken instanceof ResourceRestrictedTokenInterface
++                        ? $this->accessToken->getResources()
++                        : [],
+             ]);
+ 
+             if ($refreshTokenPayload === false) {

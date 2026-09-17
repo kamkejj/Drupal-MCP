@@ -1,0 +1,31 @@
+# The MCP endpoint. Authentication is deliberately NOT required at the route
+# level: the controller enforces a bearer-token gate itself so that missing,
+# invalid, or insufficient credentials produce RFC 9728-aware 401/403 JSON
+# responses instead of Drupal HTML or redirects.
+#
+# _auth is limited to the oauth2 provider so cookie-only requests can never
+# authenticate on this route. CORS preflights carry no credentials and are
+# answered by the module's request subscriber before Drupal's generic OPTIONS
+# subscriber short-circuits routing.
+drupal_mcp.endpoint:
+  path: '/mcp'
+  defaults:
+    _controller: '\Drupal\drupal_mcp\Controller\McpController::handle'
+  methods: [POST, GET, DELETE, OPTIONS]
+  requirements:
+    # Open access is intentional: with no route-level authentication
+    # requirement the controller's own gate produces the RFC 9728-aware
+    # 401/403 JSON responses instead of Drupal HTML or login redirects,
+    # while the oauth2-only _auth option still blocks cookie-only access.
+    _access: 'TRUE'
+  options:
+    _auth: ['oauth2']
+    no_cache: TRUE
+
+drupal_mcp.settings:
+  path: '/admin/config/services/drupal-mcp'
+  defaults:
+    _form: 'Drupal\drupal_mcp\Form\SettingsForm'
+    _title: 'Drupal MCP settings'
+  requirements:
+    _permission: 'administer site configuration'

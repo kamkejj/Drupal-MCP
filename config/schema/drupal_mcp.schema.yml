@@ -1,0 +1,116 @@
+drupal_mcp.settings:
+  type: config_object
+  label: 'Drupal MCP settings'
+  mapping:
+    read_scope:
+      type: string
+      label: 'Required OAuth scope for read access'
+    write_scope:
+      type: string
+      label: 'Required OAuth scope for write access'
+    resource_binding:
+      type: string
+      label: 'Resource audience binding policy'
+      constraints:
+        AllowedValues:
+          - audit
+          - require
+    resource_uri:
+      type: string
+      label: 'Canonical MCP resource URI'
+    allowed_hosts:
+      type: sequence
+      label: 'Allowed hosts'
+      sequence:
+        type: string
+    allowed_origins:
+      type: sequence
+      label: 'Allowed CORS origins'
+      sequence:
+        type: string
+    max_body_bytes:
+      type: integer
+      label: 'Maximum request body size in bytes'
+    session_ttl:
+      type: integer
+      label: 'MCP session time-to-live in seconds'
+    idempotency_ttl:
+      type: integer
+      label: 'Mutation idempotency time-to-live in seconds'
+    mutation_families:
+      type: mapping
+      label: 'Enabled mutation families'
+      mapping:
+        taxonomy:
+          type: boolean
+    writable_vocabularies:
+      type: sequence
+      label: 'Vocabularies writable through MCP'
+      sequence:
+        type: string
+    destructive_mutations:
+      type: mapping
+      label: 'Enabled destructive mutations'
+      mapping:
+        taxonomy_terms:
+          type: boolean
+    pagination_limit:
+      type: integer
+      label: 'Maximum page size for list tools'
+    flood_limit:
+      type: integer
+      label: 'Allowed requests per flood window per user and consumer'
+    flood_window:
+      type: integer
+      label: 'Flood control window in seconds'
+    families:
+      type: mapping
+      label: 'Enabled tool families'
+      mapping:
+        site:
+          type: boolean
+        entity_schema:
+          type: boolean
+        content:
+          type: boolean
+        taxonomy:
+          type: boolean
+        blocks:
+          type: boolean
+        menus:
+          type: boolean
+        aliases:
+          type: boolean
+        files:
+          type: boolean
+        users:
+          type: boolean
+        drush:
+          type: boolean
+        database:
+          type: boolean
+    drush_commands:
+      type: sequence
+      label: 'Approved Drush command IDs'
+      sequence:
+        type: string
+    drush_config_names:
+      type: sequence
+      label: 'Configuration object names the config:get diagnostic may read'
+      sequence:
+        type: string
+    database_surfaces:
+      type: sequence
+      label: 'Approved database surfaces'
+      sequence:
+        type: string
+    node_bundles:
+      type: sequence
+      label: 'Enabled node bundles'
+      sequence:
+        type: string
+    vocabularies:
+      type: sequence
+      label: 'Enabled vocabularies'
+      sequence:
+        type: string

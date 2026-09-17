@@ -1,0 +1,224 @@
+services:
+  logger.channel.drupal_mcp:
+    parent: logger.channel_base
+    arguments: ['drupal_mcp']
+
+  Drupal\drupal_mcp\Mcp\ToolRegistry:
+    class: Drupal\drupal_mcp\Mcp\ToolRegistry
+    arguments:
+      - '@config.factory'
+      - !tagged drupal_mcp.tool_provider
+      - '@logger.channel.drupal_mcp'
+  drupal_mcp.tool_registry: '@Drupal\drupal_mcp\Mcp\ToolRegistry'
+
+  Drupal\drupal_mcp\Mcp\SessionStore:
+    class: Drupal\drupal_mcp\Mcp\SessionStore
+    arguments:
+      - '@keyvalue.expirable'
+      - '@current_user'
+      - '@datetime.time'
+      - '@config.factory'
+  drupal_mcp.session_store: '@Drupal\drupal_mcp\Mcp\SessionStore'
+
+  Drupal\drupal_mcp\Idempotency\IdempotencyManager:
+    class: Drupal\drupal_mcp\Idempotency\IdempotencyManager
+    arguments:
+      - '@keyvalue.expirable'
+      - '@lock'
+      - '@datetime.time'
+      - '@config.factory'
+      - '@private_key'
+  drupal_mcp.idempotency: '@Drupal\drupal_mcp\Idempotency\IdempotencyManager'
+
+  Drupal\drupal_mcp\Access\McpAccessPolicy:
+    class: Drupal\drupal_mcp\Access\McpAccessPolicy
+    arguments:
+      - '@config.factory'
+      - '@logger.channel.drupal_mcp'
+  drupal_mcp.access_policy: '@Drupal\drupal_mcp\Access\McpAccessPolicy'
+
+  Drupal\drupal_mcp\Http\McpRequestValidator:
+    class: Drupal\drupal_mcp\Http\McpRequestValidator
+    arguments:
+      - '@config.factory'
+  drupal_mcp.request_validator: '@Drupal\drupal_mcp\Http\McpRequestValidator'
+
+  Drupal\drupal_mcp\Entity\AccessibleEntityPager:
+    class: Drupal\drupal_mcp\Entity\AccessibleEntityPager
+  drupal_mcp.accessible_entity_pager: '@Drupal\drupal_mcp\Entity\AccessibleEntityPager'
+
+  Drupal\drupal_mcp\Mcp\ServerFactory:
+    class: Drupal\drupal_mcp\Mcp\ServerFactory
+    arguments:
+      - '@drupal_mcp.tool_registry'
+      - '@drupal_mcp.session_store'
+      - '@logger.channel.drupal_mcp'
+      - '@config.factory'
+      - '@extension.list.module'
+  drupal_mcp.server_factory: '@Drupal\drupal_mcp\Mcp\ServerFactory'
+
+  Drupal\drupal_mcp\Tool\SiteToolProvider:
+    class: Drupal\drupal_mcp\Tool\SiteToolProvider
+    arguments:
+      - '@current_user'
+      - '@config.factory'
+      - '@drupal_mcp.access_policy'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\EntitySchemaToolProvider:
+    class: Drupal\drupal_mcp\Tool\EntitySchemaToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@entity_type.bundle.info'
+      - '@entity_field.manager'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\ContentToolProvider:
+    class: Drupal\drupal_mcp\Tool\ContentToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@drupal_mcp.accessible_entity_pager'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\TaxonomyToolProvider:
+    class: Drupal\drupal_mcp\Tool\TaxonomyToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@drupal_mcp.accessible_entity_pager'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Mutation\TaxonomyTermMutator:
+    class: Drupal\drupal_mcp\Mutation\TaxonomyTermMutator
+    arguments:
+      - '@entity_type.manager'
+      - '@entity_field.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@lock'
+      - '@logger.channel.drupal_mcp'
+  drupal_mcp.taxonomy_term_mutator: '@Drupal\drupal_mcp\Mutation\TaxonomyTermMutator'
+
+  Drupal\drupal_mcp\Tool\TaxonomyMutationToolProvider:
+    class: Drupal\drupal_mcp\Tool\TaxonomyMutationToolProvider
+    arguments:
+      - '@drupal_mcp.taxonomy_term_mutator'
+      - '@drupal_mcp.idempotency'
+      - '@current_user'
+      - '@config.factory'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\BlockToolProvider:
+    class: Drupal\drupal_mcp\Tool\BlockToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@drupal_mcp.accessible_entity_pager'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\NavigationToolProvider:
+    class: Drupal\drupal_mcp\Tool\NavigationToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@menu.link_tree'
+      - '@current_user'
+      - '@config.factory'
+      - '@drupal_mcp.accessible_entity_pager'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\FileToolProvider:
+    class: Drupal\drupal_mcp\Tool\FileToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@file.usage'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\UserToolProvider:
+    class: Drupal\drupal_mcp\Tool\UserToolProvider
+    arguments:
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@drupal_mcp.accessible_entity_pager'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Diagnostics\DrushRunner:
+    class: Drupal\drupal_mcp\Diagnostics\DrushRunner
+    arguments:
+      - '@config.factory'
+      - '@logger.channel.drupal_mcp'
+      - '%app.root%'
+      - '@current_user'
+      - '@request_stack'
+      - '@lock'
+  drupal_mcp.drush_runner: '@Drupal\drupal_mcp\Diagnostics\DrushRunner'
+
+  Drupal\drupal_mcp\Diagnostics\ReadOnlyDatabaseConnection:
+    class: Drupal\drupal_mcp\Diagnostics\ReadOnlyDatabaseConnection
+  drupal_mcp.database_connection: '@Drupal\drupal_mcp\Diagnostics\ReadOnlyDatabaseConnection'
+
+  Drupal\drupal_mcp\Diagnostics\DatabaseInspector:
+    class: Drupal\drupal_mcp\Diagnostics\DatabaseInspector
+    arguments:
+      - '@drupal_mcp.database_connection'
+      - '@config.factory'
+      - '@current_user'
+      - '@request_stack'
+      - '@logger.channel.drupal_mcp'
+      - '@lock'
+  drupal_mcp.database_inspector: '@Drupal\drupal_mcp\Diagnostics\DatabaseInspector'
+
+  Drupal\drupal_mcp\Tool\DatabaseToolProvider:
+    class: Drupal\drupal_mcp\Tool\DatabaseToolProvider
+    arguments:
+      - '@drupal_mcp.database_inspector'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\DrushToolProvider:
+    class: Drupal\drupal_mcp\Tool\DrushToolProvider
+    arguments:
+      - '@drupal_mcp.drush_runner'
+      - '@config.factory'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\EventSubscriber\ResourceMetadataSubscriber:
+    class: Drupal\drupal_mcp\EventSubscriber\ResourceMetadataSubscriber
+    arguments:
+      - '@config.factory'
+    tags:
+      - { name: event_subscriber }
+
+  Drupal\drupal_mcp\EventSubscriber\McpOptionsSubscriber:
+    class: Drupal\drupal_mcp\EventSubscriber\McpOptionsSubscriber
+    arguments:
+      - '@drupal_mcp.request_validator'
+    tags:
+      - { name: event_subscriber }
+
+  Drupal\drupal_mcp\EventSubscriber\McpResponseSubscriber:
+    class: Drupal\drupal_mcp\EventSubscriber\McpResponseSubscriber
+    tags:
+      - { name: event_subscriber }
+
+  Drupal\drupal_mcp\EventSubscriber\McpAuthExceptionSubscriber:
+    class: Drupal\drupal_mcp\EventSubscriber\McpAuthExceptionSubscriber
+    arguments:
+      - '@drupal_mcp.access_policy'
+    tags:
+      - { name: event_subscriber }

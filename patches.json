@@ -1,0 +1,14 @@
+{
+    "patches": {
+        "league/oauth2-server": {
+            "RFC 8707 resource indicators for authorization-code and refresh grants": "patches/league-oauth2-server-rfc8707.patch"
+        },
+        "drupal/simple_oauth": {
+            "Propagate RFC 8707 resource restrictions into access-token JWTs": "patches/simple-oauth-rfc8707.patch",
+            "Vary token permission calculation by authenticated user": "patches/simple-oauth-token-permissions-user-cache-context.patch"
+        },
+        "e0ipso/simple_oauth_21": {
+            "Resolve revoked tokens by their stored identifier": "patches/simple-oauth-rfc7009-jwt-revocation.patch"
+        }
+    }
+}

@@ -1,0 +1,11 @@
+name: Drupal MCP
+type: module
+description: 'Exposes a bounded MCP server at /mcp with read tools and disabled-by-default, allowlisted mutations. Every request requires a validated Simple OAuth user token.'
+package: Custom
+core_version_requirement: ^11
+dependencies:
+  - drupal:file
+  - drupal:taxonomy
+  - simple_oauth:simple_oauth
+  - simple_oauth_21:simple_oauth_server_metadata
+configure: drupal_mcp.settings

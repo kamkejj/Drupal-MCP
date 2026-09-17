@@ -1,0 +1,5 @@
+drupal_mcp.settings:
+  title: 'Drupal MCP'
+  description: 'Configure the MCP server endpoint, tool families, and limits.'
+  route_name: drupal_mcp.settings
+  parent: system.admin_config_services

@@ -1,0 +1,109 @@
+diff --git a/modules/simple_oauth_server_metadata/src/Service/TokenRevocationService.php b/modules/simple_oauth_server_metadata/src/Service/TokenRevocationService.php
+--- a/modules/simple_oauth_server_metadata/src/Service/TokenRevocationService.php
++++ b/modules/simple_oauth_server_metadata/src/Service/TokenRevocationService.php
+@@ -53,14 +53,21 @@ final class TokenRevocationService {
+       return TRUE;
+     }
+ 
+-    $token = $this->findToken($tokenValue);
++    $claims = $this->tokenClaims($tokenValue);
++    $token = $this->findToken($tokenValue, $claims);
+ 
+     if (!$token) {
+       return TRUE;
+     }
+ 
+     if (!$bypassOwnership && !$this->validateOwnership($token, $clientId)) {
+-      return FALSE;
++      // Refresh-token entities do not store a client reference, so validate
++      // those against the client_id inside the authenticated ciphertext
++      // payload, the same value the refresh grant itself compares.
++      $payloadClientId = is_array($claims) ? ($claims['client_id'] ?? NULL) : NULL;
++      if (!is_string($payloadClientId) || $payloadClientId !== $clientId) {
++        return FALSE;
++      }
+     }
+ 
+     if ($token->isRevoked()) {
+@@ -88,10 +95,11 @@ final class TokenRevocationService {
+    * @throws \Drupal\Component\Plugin\Exception\InvalidPluginDefinitionException
+    * @throws \Drupal\Component\Plugin\Exception\PluginNotFoundException
+    */
+-  private function findToken(string $tokenValue): ?Oauth2TokenInterface {
++  private function findToken(string $tokenValue, ?array $claims): ?Oauth2TokenInterface {
+     $storage = $this->entityTypeManager->getStorage('oauth2_token');
+ 
+-    $tokens = $storage->loadByProperties(['value' => $tokenValue]);
++    $identifier = $this->tokenIdentifier($tokenValue, $claims);
++    $tokens = $storage->loadByProperties(['value' => $identifier]);
+ 
+     if (empty($tokens)) {
+       return NULL;
+@@ -100,6 +108,67 @@ final class TokenRevocationService {
+     return reset($tokens);
+   }
+ 
++  /**
++   * Extracts the stored identifier from a client-presented token string.
++   *
++   * JWT access tokens are stored by their jti claim, and encrypted refresh
++   * tokens by the identifier inside the ciphertext. Opaque strings are
++   * returned unchanged so existing lookups keep working.
++   */
++  private function tokenIdentifier(string $tokenValue, ?array $claims): string {
++    $parts = explode('.', $tokenValue);
++    if (count($parts) === 3) {
++      $payload = strtr($parts[1], '-_', '+/');
++      $payload .= str_repeat('=', (4 - strlen($payload) % 4) % 4);
++      $decoded = base64_decode($payload, TRUE);
++      if ($decoded !== FALSE) {
++        $jwtClaims = json_decode($decoded, TRUE);
++        $jti = is_array($jwtClaims) ? ($jwtClaims['jti'] ?? NULL) : NULL;
++        if (is_string($jti) && $jti !== '') {
++          return $jti;
++        }
++      }
++    }
++
++    foreach (['refresh_token_id', 'access_token_id'] as $key) {
++      $value = $claims[$key] ?? NULL;
++      if (is_string($value) && $value !== '') {
++        return $value;
++      }
++    }
++
++    return $tokenValue;
++  }
++
++  /**
++   * Decrypts an encrypted token payload.
++   *
++   * The ciphertext prefix and hex encoding are verified before attempting
++   * decryption so arbitrary input never triggers the expensive key
++   * derivation. Decryption failures return NULL, which leaves the entity
++   * lookup to simply fail.
++   */
++  private function tokenClaims(string $tokenValue): ?array {
++    if (!str_starts_with($tokenValue, 'def502') || !preg_match('/^[0-9a-f]+$/', $tokenValue)) {
++      return NULL;
++    }
++
++    $salt = \Drupal\Core\Site\Settings::getHashSalt();
++    if (strlen($salt) < 32) {
++      return NULL;
++    }
++
++    try {
++      $json = \Defuse\Crypto\Crypto::decryptWithPassword($tokenValue, substr($salt, 0, 32));
++      $claims = json_decode($json, TRUE);
++    }
++    catch (\Defuse\Crypto\Exception\CryptoException) {
++      return NULL;
++    }
++
++    return is_array($claims) ? $claims : NULL;
++  }
++
+   /**
+    * Validates that the token belongs to the specified client.
+    *

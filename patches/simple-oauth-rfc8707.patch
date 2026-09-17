@@ -1,0 +1,47 @@
+diff --git a/src/Entities/AccessTokenEntity.php b/src/Entities/AccessTokenEntity.php
+index 696eb43..9d3d359 100644
+--- a/src/Entities/AccessTokenEntity.php
++++ b/src/Entities/AccessTokenEntity.php
+@@ -1,5 +1,7 @@
+ <?php
+ 
++declare(strict_types=1);
++
+ namespace Drupal\simple_oauth\Entities;
+ 
+ use Drupal\Component\Datetime\TimeInterface;
+@@ -14,8 +16,10 @@ use Lcobucci\JWT\Signer\Key\InMemory;
+ use Lcobucci\JWT\Signer\Rsa\Sha256;
+ use Lcobucci\JWT\Token\RegisteredClaims;
+ use League\OAuth2\Server\Entities\AccessTokenEntityInterface;
++use League\OAuth2\Server\Entities\ResourceRestrictedTokenInterface;
+ use League\OAuth2\Server\Entities\Traits\AccessTokenTrait;
+ use League\OAuth2\Server\Entities\Traits\EntityTrait;
++use League\OAuth2\Server\Entities\Traits\ResourceRestrictedTokenTrait;
+ use League\OAuth2\Server\Entities\Traits\TokenEntityTrait;
+ use Psr\Log\LoggerAwareInterface;
+ use Psr\Log\LoggerAwareTrait;
+@@ -23,9 +27,9 @@ use Psr\Log\LoggerAwareTrait;
+ /**
+  * The entity for the Access token.
+  */
+-class AccessTokenEntity implements AccessTokenEntityInterface, ContainerInjectionInterface, LoggerAwareInterface {
++class AccessTokenEntity implements AccessTokenEntityInterface, ContainerInjectionInterface, LoggerAwareInterface, ResourceRestrictedTokenInterface {
+ 
+-  use AccessTokenTrait, AutowireTrait, LoggerAwareTrait, TokenEntityTrait, EntityTrait;
++  use AccessTokenTrait, AutowireTrait, LoggerAwareTrait, ResourceRestrictedTokenTrait, TokenEntityTrait, EntityTrait;
+ 
+   public function __construct(
+     protected ModuleHandlerInterface $moduleHandler,
+@@ -68,6 +72,11 @@ class AccessTokenEntity implements AccessTokenEntityInterface, ContainerInjectio
+       ->expiresAt($this->getExpiryDateTime())
+       ->withClaim('scope', $this->getScopes());
+ 
++    $resources = $this->getResources();
++    if ($resources !== []) {
++      $builder = $builder->withClaim('resource', $resources);
++    }
++
+     if ($user_id) {
+       $builder = $builder->relatedTo($user_id);
+     }
