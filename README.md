@@ -5,7 +5,7 @@
 This module exposes Drupal through a bounded Model Context Protocol (MCP)
 server at `https://drupalmcp.ddev.site/mcp`. It lets authenticated MCP clients
 inspect selected site data and structure, run explicitly approved diagnostics,
-and perform narrowly allowlisted taxonomy mutations. Every request requires a
+and perform narrowly allowlisted taxonomy and content mutations. Every request requires a
 Simple OAuth bearer token associated with an active Drupal user; OAuth scopes
 limit the token while Drupal permissions and entity access remain authoritative.
 
@@ -25,6 +25,10 @@ The module provides these MCP tool families:
 - Disabled-by-default taxonomy term creation, update, and deletion for
   explicitly writable vocabularies. Mutations enforce native Drupal access,
   revision preconditions, field validation, and idempotency where applicable.
+- Disabled-by-default node creation and update for explicitly writable node
+  bundles (a strict subset of the bundles exposed for reads), with the same
+  native access, revision precondition, field validation, and idempotency
+  guarantees as taxonomy mutations.
 
 The server uses Streamable HTTP, OAuth authorization-code flow with PKCE,
 RFC 8707 resource binding, paginated tool discovery, signed cursors, bounded
@@ -261,6 +265,30 @@ checks.
 Updates require the current `expected_revision_id`; create and update also
 require an idempotency key. Delete requires exact revision and term-name
 confirmation and refuses to delete referenced terms.
+
+## Content (node) mutations
+
+Node mutations are configured at the same settings form under **Mutations
+(restricted)**: enable **Enable content (node) mutations**, then select writable
+node bundles. Only bundles already listed under **Enabled node bundles** are
+selectable, so the writable set is always a subset of the exposed set. The
+equivalent DDEV/Drush configuration is:
+
+```shell
+ddev drush config:set drupal_mcp.settings node_bundles '["article"]' --input-format=json -y
+ddev drush config:set drupal_mcp.settings mutation_families.node true -y
+ddev drush config:set drupal_mcp.settings writable_node_bundles '["article"]' --input-format=json -y
+ddev drush cr
+```
+
+`drupal_content_create` and `drupal_content_update` are exposed only after the
+node mutation family is enabled and at least one exposed bundle is writable.
+Both require an `mcp:write` token, `access mcp write`, and applicable native
+Drupal node, field, and text-format access; configuration never bypasses those
+checks. Updates require the current `expected_revision_id`, which
+`drupal_content_get` exposes as `revision_id`; both operations require an
+idempotency key. Updates save new revisions. Node deletion is not part of this
+surface.
 
 See [docs/conformance.md](docs/conformance.md) for the evidence matrix and
 coverage boundary. [docs/operations.md](docs/operations.md) covers deployment,

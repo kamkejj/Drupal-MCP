@@ -7,6 +7,7 @@ namespace Drupal\drupal_mcp\Entity;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
+use Drupal\Core\Entity\RevisionableInterface;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Field\FieldStorageDefinitionInterface;
 use Drupal\Core\Session\AccountInterface;
@@ -112,6 +113,14 @@ final class EntityProjection {
     $labelField = $entity->getEntityType()->getKey('label');
     if ($labelField && self::canViewField($entity, $labelField, $account)) {
       $data['label'] = $entity->label() !== NULL ? (string) $entity->label() : NULL;
+    }
+    // Revisionable entities expose the current revision id so clients can
+    // pass an exact expected_revision_id precondition to mutation tools.
+    if ($entity instanceof RevisionableInterface && $entity->getEntityType()->isRevisionable()) {
+      $revisionKey = $entity->getEntityType()->getKey('revision');
+      if ($revisionKey && self::canViewField($entity, $revisionKey, $account)) {
+        $data['revision_id'] = (int) $entity->getRevisionId();
+      }
     }
     foreach (['status', 'created', 'changed'] as $fieldName) {
       if (self::canViewField($entity, $fieldName, $account)) {

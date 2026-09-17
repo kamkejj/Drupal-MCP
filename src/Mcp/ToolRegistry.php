@@ -60,6 +60,7 @@ final class ToolRegistry {
     $families = $settings->get('families') ?? [];
     // Mutation families are intentionally separate from read exposure.
     $families['taxonomy_mutation'] = (bool) $settings->get('mutation_families.taxonomy');
+    $families['node_mutation'] = (bool) $settings->get('mutation_families.node');
 
     $tools = [];
     foreach ($this->providers as $provider) {

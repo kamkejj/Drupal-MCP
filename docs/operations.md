@@ -1,6 +1,6 @@
 # Drupal MCP operations runbook
 
-This runbook covers read access and the disabled-by-default taxonomy create/update release. Commands are run from the
+This runbook covers read access and the disabled-by-default taxonomy create/update and node create/update releases. Commands are run from the
 Drupal project root unless stated otherwise. Replace example hostnames, client
 IDs, redirect URIs, and usernames with deployment-specific values.
 
@@ -82,9 +82,10 @@ confidential-client secrets in a checked-in client configuration. A client must
 discover OAuth metadata, open the browser login/consent flow, and send the
 resulting bearer token only in the `Authorization` header.
 
-## Taxonomy write enablement
+## Taxonomy and node write enablement
 
-Keep `mutation_families.taxonomy`, `writable_vocabularies`, and
+Keep `mutation_families.taxonomy`, `writable_vocabularies`,
+`mutation_families.node`, `writable_node_bundles`, and
 `destructive_mutations.taxonomy_terms` at their default-off values until a
 reviewed deployment explicitly needs them. For Tags mutations, grant a dedicated
 role `access mcp write` plus the required native taxonomy and text format
@@ -99,6 +100,14 @@ bounded result for `idempotency_ttl` seconds. Monitor mutation audit outcomes
 and unexpected failures; arguments and idempotency keys are never logged.
 Term deletion remains default-off, is advertised only when explicitly enabled,
 and requires revision and name confirmation; referenced terms are not deleted.
+
+Node writes follow the same model: grant a dedicated role `access mcp write`
+plus the required native node and text-format permissions, enable
+`mutation_families.node`, and list writable bundles under
+`writable_node_bundles` (always a subset of the read-exposed `node_bundles`).
+`drupal_content_get` exposes the `revision_id` clients must pass as
+`expected_revision_id` to `drupal_content_update`; updates save new revisions
+and both operations require idempotency keys. Node deletion is not exposed.
 
 ## Release verification
 

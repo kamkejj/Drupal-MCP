@@ -194,6 +194,22 @@ final class SettingsForm extends ConfigFormBase {
         $enabledVocabularies,
       )),
     ];
+    $form['mutations']['node'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Enable content (node) mutations'),
+      '#default_value' => (bool) $config->get('mutation_families.node'),
+    ];
+    $enabledBundles = (array) ($config->get('node_bundles') ?? []);
+    $form['mutations']['writable_node_bundles'] = [
+      '#type' => 'checkboxes',
+      '#title' => $this->t('Writable node bundles'),
+      '#description' => $this->t('Only node bundles enabled for reads can be selected. Selection does not bypass native access checks.'),
+      '#options' => array_combine($enabledBundles, $enabledBundles) ?: [],
+      '#default_value' => array_values(array_intersect(
+        (array) ($config->get('writable_node_bundles') ?? []),
+        $enabledBundles,
+      )),
+    ];
     $form['mutations']['destructive_taxonomy_terms'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Enable destructive taxonomy term deletion'),
@@ -298,8 +314,12 @@ final class SettingsForm extends ConfigFormBase {
       ->set('node_bundles', $lines((string) $form_state->getValue(['families', 'node_bundles'])))
       ->set('vocabularies', $lines((string) $form_state->getValue(['families', 'vocabularies'])))
       ->set('mutation_families.taxonomy', (bool) $form_state->getValue(['mutations', 'taxonomy']))
+      ->set('mutation_families.node', (bool) $form_state->getValue(['mutations', 'node']))
       ->set('writable_vocabularies', array_values(array_filter(
         (array) $form_state->getValue(['mutations', 'writable_vocabularies'])
+      )))
+      ->set('writable_node_bundles', array_values(array_filter(
+        (array) $form_state->getValue(['mutations', 'writable_node_bundles'])
       )))
       ->set(
         'destructive_mutations.taxonomy_terms',
