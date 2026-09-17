@@ -146,8 +146,11 @@ final class McpController extends ControllerBase {
     $psr7Response = $server->run($transport);
     \assert($psr7Response instanceof ResponseInterface);
 
-    $response = $this->httpFoundationFactory->createResponse($psr7Response);
-    return $response;
+    // The SDK uses a lazy callback stream for SSE responses. Converting that
+    // stream to a buffered Symfony response consumes it outside the response
+    // lifecycle, yielding an empty or HTML response after a tool has run.
+    $streamed = str_starts_with(strtolower($psr7Response->getHeaderLine('Content-Type')), 'text/event-stream');
+    return $this->httpFoundationFactory->createResponse($psr7Response, $streamed);
   }
 
   /**
