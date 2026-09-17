@@ -43,9 +43,16 @@ drupal_mcp.settings:
       mapping:
         taxonomy:
           type: boolean
+        node:
+          type: boolean
     writable_vocabularies:
       type: sequence
       label: 'Vocabularies writable through MCP'
+      sequence:
+        type: string
+    writable_node_bundles:
+      type: sequence
+      label: 'Node bundles writable through MCP'
       sequence:
         type: string
     destructive_mutations:

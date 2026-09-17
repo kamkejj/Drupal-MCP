@@ -1,6 +1,6 @@
 {
     "name": "kamkejj/drupal-mcp",
-    "description": "A secure, bounded, read-only Model Context Protocol server for Drupal.",
+    "description": "A secure, bounded Model Context Protocol server for Drupal with opt-in, allowlisted mutations.",
     "type": "drupal-module",
     "license": "GPL-2.0-or-later",
     "repositories": [

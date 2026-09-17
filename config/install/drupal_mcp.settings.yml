@@ -15,7 +15,9 @@ session_ttl: 3600
 idempotency_ttl: 86400
 mutation_families:
   taxonomy: false
+  node: false
 writable_vocabularies: { }
+writable_node_bundles: { }
 destructive_mutations:
   taxonomy_terms: false
 pagination_limit: 20

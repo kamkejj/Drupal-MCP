@@ -106,10 +106,31 @@ services:
       - '@logger.channel.drupal_mcp'
   drupal_mcp.taxonomy_term_mutator: '@Drupal\drupal_mcp\Mutation\TaxonomyTermMutator'
 
+  Drupal\drupal_mcp\Mutation\NodeMutator:
+    class: Drupal\drupal_mcp\Mutation\NodeMutator
+    arguments:
+      - '@entity_type.manager'
+      - '@entity_field.manager'
+      - '@current_user'
+      - '@config.factory'
+      - '@lock'
+      - '@logger.channel.drupal_mcp'
+  drupal_mcp.node_mutator: '@Drupal\drupal_mcp\Mutation\NodeMutator'
+
   Drupal\drupal_mcp\Tool\TaxonomyMutationToolProvider:
     class: Drupal\drupal_mcp\Tool\TaxonomyMutationToolProvider
     arguments:
       - '@drupal_mcp.taxonomy_term_mutator'
+      - '@drupal_mcp.idempotency'
+      - '@current_user'
+      - '@config.factory'
+    tags:
+      - { name: drupal_mcp.tool_provider }
+
+  Drupal\drupal_mcp\Tool\ContentMutationToolProvider:
+    class: Drupal\drupal_mcp\Tool\ContentMutationToolProvider
+    arguments:
+      - '@drupal_mcp.node_mutator'
       - '@drupal_mcp.idempotency'
       - '@current_user'
       - '@config.factory'

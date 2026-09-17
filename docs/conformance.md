@@ -8,7 +8,10 @@ Last verified: 2026-09-15 against `https://drupalmcp.ddev.site/mcp`.
 | Official Python SDK | `mcp==2.2.0` | `2026-07-28` | Passed modern direct-version transport, all paginated `tools/list` pages, and `tools/call` for `drupal_whoami`. |
 
 Both clients discovered 14 tools for the same ordinary reader token and
-received successful structured content from `drupal_whoami`.
+received successful structured content from `drupal_whoami`. Mutation tools
+(`drupal_term_*`, `drupal_content_*`) are excluded from that count because
+mutation families ship disabled; their catalogue and call behaviour is covered
+by the kernel and functional suites.
 
 Run the reproducible harness with:
 

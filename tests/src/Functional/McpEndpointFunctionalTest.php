@@ -339,6 +339,8 @@ final class McpEndpointFunctionalTest extends TokenBearerFunctionalTestBase {
     $this->config('drupal_mcp.settings')
       ->set('mutation_families.taxonomy', TRUE)
       ->set('writable_vocabularies', ['tags'])
+      ->set('mutation_families.node', TRUE)
+      ->set('writable_node_bundles', ['article'])
       ->save();
 
     $readerTokens = $this->authorizeToken();
@@ -346,9 +348,12 @@ final class McpEndpointFunctionalTest extends TokenBearerFunctionalTestBase {
     $writerTokens = $this->authorizeToken($this->writerUser, TRUE, NULL, 'mcp:write');
 
     $this->assertNotContains('drupal_term_create', $this->toolNames($readerTokens['access_token'], 30));
+    $this->assertNotContains('drupal_content_create', $this->toolNames($readerTokens['access_token'], 30));
     $writerTools = $this->toolNames($writerTokens['access_token'], 31);
     $this->assertContains('drupal_term_create', $writerTools);
     $this->assertContains('drupal_term_update', $writerTools);
+    $this->assertContains('drupal_content_create', $writerTools);
+    $this->assertContains('drupal_content_update', $writerTools);
     $this->assertNotContains('drupal_site_info', $writerTools);
 
     Role::load($this->writerRoleId)?->revokePermission('access mcp write')->save();
