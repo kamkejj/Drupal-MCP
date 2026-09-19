@@ -223,6 +223,21 @@ final class NodeMutationKernelTest extends KernelTestBase {
       'changes' => ['title' => 'Denied update'],
     ]));
 
+    // A caller without update access on a non-writable bundle gets the access
+    // denial, never the allowlist or revision answer.
+    $page = Node::create([
+      'type' => 'page',
+      'title' => 'Unwritable page',
+      'uid' => $this->writer->id(),
+      'status' => 1,
+    ]);
+    $page->save();
+    $this->assertFailure('entity_access_denied', fn () => $this->mutator->update($this->caller($unprivileged), [
+      'id' => (int) $page->id(),
+      'expected_revision_id' => 1,
+      'changes' => ['title' => 'Probe'],
+    ]));
+
     $this->container->get('state')->set('drupal_mcp_test.denied_fields', ['field_mcp_text']);
     $this->container->get('state')->set('drupal_mcp_test.denied_field_operations', ['edit']);
     $this->resetAccessCaches();

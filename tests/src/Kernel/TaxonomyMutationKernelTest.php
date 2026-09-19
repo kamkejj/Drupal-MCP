@@ -140,6 +140,15 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
       'changes' => ['name' => 'Denied update'],
     ]));
 
+    // A caller without update access on a non-writable vocabulary gets the
+    // access denial, never the allowlist or revision answer.
+    $unwritable = $this->term('Unwritable', 'readonly');
+    $this->assertFailure('entity_access_denied', fn () => $this->mutator->update($this->caller($unprivileged), [
+      'id' => (int) $unwritable->id(),
+      'expected_revision_id' => (int) $unwritable->id(),
+      'changes' => ['name' => 'Probe'],
+    ]));
+
     $this->container->get('state')->set('drupal_mcp_test.denied_fields', ['name']);
     $this->container->get('state')->set('drupal_mcp_test.denied_field_operations', ['edit']);
     $this->resetAccessCaches();

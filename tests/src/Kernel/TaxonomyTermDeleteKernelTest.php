@@ -83,6 +83,19 @@ final class TaxonomyTermDeleteKernelTest extends KernelTestBase {
     $this->assertFailure('revision_conflict', fn (): array => $this->mutator->delete($allowed, array_replace($command, ['expected_revision_id' => 999999])));
     $this->assertFailure('target_mismatch', fn (): array => $this->mutator->delete($allowed, array_replace($command, ['confirm_term_name' => 'Wrong'])));
 
+    // A caller without delete access on a non-writable vocabulary gets the
+    // access denial, never the allowlist answer.
+    Vocabulary::create(['vid' => 'readonly', 'name' => 'Read only'])->save();
+    $locked = Term::create(['vid' => 'readonly', 'name' => 'Locked']);
+    $locked->save();
+    $bystander = User::create(['name' => 'bystander', 'status' => 1]);
+    $bystander->save();
+    $this->assertFailure('entity_access_denied', fn (): array => $this->mutator->delete($bystander, [
+      'id' => (int) $locked->id(),
+      'expected_revision_id' => (int) $locked->getRevisionId(),
+      'confirm_term_name' => 'Locked',
+    ]));
+
     $child = Term::create(['vid' => 'tags', 'name' => 'Child', 'parent' => [['target_id' => $term->id()]]]);
     $child->save();
     $this->assertFailure('target_referenced', fn (): array => $this->mutator->delete($allowed, $command));

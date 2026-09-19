@@ -82,10 +82,13 @@ final class TaxonomyTermMutator implements EntityMutatorInterface {
         throw $this->failure('not_found', 'The taxonomy term was not found or is inaccessible.');
       }
       $vocabulary = $term->bundle();
-      $this->assertEnabledVocabulary($vocabulary);
+      // Entity access is checked before the vocabulary allowlist and revision
+      // precondition so callers without update access cannot probe which
+      // vocabularies are writable or learn the current revision id.
       if (!$term->access('update', $account)) {
         throw $this->failure('entity_access_denied', 'The taxonomy term was not found or is inaccessible.');
       }
+      $this->assertEnabledVocabulary($vocabulary);
       $expected = (int) ($command['expected_revision_id'] ?? 0);
       $current = $this->revisionId($term);
       if ($expected < 1 || $expected !== $current) {
@@ -152,10 +155,12 @@ final class TaxonomyTermMutator implements EntityMutatorInterface {
         throw $this->failure('not_found', 'The taxonomy term was not found or is inaccessible.');
       }
       $vocabulary = $term->bundle();
-      $this->assertEnabledVocabulary($vocabulary);
+      // As with update: delete access first, so the vocabulary allowlist and
+      // revision precondition never answer unauthorized probes.
       if (!$term->access('delete', $account)) {
         throw $this->failure('entity_access_denied', 'The taxonomy term was not found or is inaccessible.');
       }
+      $this->assertEnabledVocabulary($vocabulary);
       $current = $this->revisionId($term);
       if ((int) ($command['expected_revision_id'] ?? 0) !== $current) {
         throw $this->failure('revision_conflict', sprintf('Revision conflict; current revision is %d.', $current));

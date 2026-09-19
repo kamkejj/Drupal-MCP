@@ -159,7 +159,9 @@ final class EntityReadTools {
    * @param array<string> $extraPermissions
    *   Additional Drupal permissions required beyond the family gates.
    * @param callable|null $guard
-   *   Rejects the loaded entity before projection, e.g. bundle allowlists.
+   *   Rejects the loaded entity after the view-access check, e.g. bundle
+   *   allowlists, so callers without view access never learn allowlist
+   *   details or existence beyond the standard not-accessible denial.
    * @param callable|null $project
    *   Produces the response; defaults to the entity-projection envelope
    *   (item metadata, field values, withheld fields).
@@ -366,11 +368,13 @@ final class EntityReadTools {
     if ($loaded === NULL) {
       throw new ToolCallException(sprintf('%s %d does not exist.', $label, $id));
     }
-    if ($guard !== NULL) {
-      $guard($loaded);
-    }
+    // View access is checked before the bundle guard so a caller without
+    // access cannot probe allowlist state one id at a time.
     if (!$loaded->access('view', $caller)) {
       throw new ToolCallException(sprintf('%s %d is not accessible.', $label, $id));
+    }
+    if ($guard !== NULL) {
+      $guard($loaded);
     }
     $project ??= self::fieldProject();
     return $project($loaded, $caller);

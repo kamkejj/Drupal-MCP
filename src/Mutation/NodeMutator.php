@@ -86,10 +86,13 @@ final class NodeMutator implements EntityMutatorInterface {
         throw $this->failure('not_found', 'The node was not found or is inaccessible.');
       }
       $bundle = $node->bundle();
-      $this->assertEnabledBundle($bundle);
+      // Entity access is checked before the bundle allowlist and revision
+      // precondition so callers without update access cannot probe which
+      // bundles are writable or learn the current revision id.
       if (!$node->access('update', $account)) {
         throw $this->failure('entity_access_denied', 'The node was not found or is inaccessible.');
       }
+      $this->assertEnabledBundle($bundle);
       $expected = (int) ($command['expected_revision_id'] ?? 0);
       $current = $this->revisionId($node);
       if ($expected < 1 || $expected !== $current) {

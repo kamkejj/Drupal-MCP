@@ -167,6 +167,36 @@ final class EntityToolAccessKernelTest extends KernelTestBase {
     $this->assertSame(1, $list['count']);
     $this->assertSame([(string) $this->visibleNode->id()], array_column($list['items'], 'id'));
 
+    // A view-denied node whose bundle is outside the read allowlist gets the
+    // access denial, never the allowlist answer, so existence and exposure
+    // state cannot be probed one id at a time.
+    NodeType::create(['type' => 'unlisted', 'name' => 'Unlisted'])->save();
+    $unlistedNode = Node::create([
+      'type' => 'unlisted',
+      'title' => 'Unlisted and denied',
+      'status' => 1,
+      'uid' => $this->administrator->id(),
+    ]);
+    $unlistedNode->save();
+    $this->container->get('state')->set('drupal_mcp_test.denied_entities', [
+      'node:' . $this->deniedNode->id(),
+      'node:' . $unlistedNode->id(),
+    ]);
+    $this->resetEntityAccessCaches();
+
+    try {
+      $this->callTool('Drupal\\drupal_mcp\\Tool\\ContentToolProvider', 'drupal_content_get', [
+        'id' => (int) $unlistedNode->id(),
+      ]);
+      $this->fail('Expected an inaccessible node rejection.');
+    }
+    catch (ToolCallException $exception) {
+      $this->assertSame(
+        sprintf('Content item %d is not accessible.', (int) $unlistedNode->id()),
+        $exception->getMessage(),
+      );
+    }
+
     $this->expectException(ToolCallException::class);
     $this->expectExceptionMessage(sprintf('Content item %d is not accessible.', $this->deniedNode->id()));
     $this->callTool('Drupal\\drupal_mcp\\Tool\\ContentToolProvider', 'drupal_content_get', [

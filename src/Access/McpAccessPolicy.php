@@ -25,8 +25,9 @@ use Symfony\Component\HttpFoundation\Response;
  *    route's oauth2-only authentication and checked here).
  * 2. The token and account have at least one valid read or write capability
  *    pair (the configured scope and its corresponding Drupal permission).
- * 4. When the access token records the OAuth resource it was issued for, that
- *    resource must be this server's canonical /mcp URI.
+ * 3. The access token carries a verifiable binding to this server's
+ *    canonical /mcp URI (RFC 8707). Tokens whose claims cannot be inspected,
+ *    or that name another resource, are rejected under the "require" policy.
  *
  * These are additional gates: entity/field access is re-checked inside every
  * tool, and OAuth itself remains owned by the contributed modules.
@@ -101,7 +102,7 @@ final class McpAccessPolicy {
   }
 
   /**
-   * Checks that a resource-bound token was issued for this MCP resource.
+   * Checks that the access token was issued for this MCP resource.
    *
    * Simple OAuth access tokens are JWTs whose "aud" claim carries the OAuth
    * client ID by convention (League OAuth2 Server hardcodes it), which is NOT
@@ -111,42 +112,38 @@ final class McpAccessPolicy {
    * - A "resource" claim is present: it must name this resource, otherwise
    *   the token is rejected as issued for another resource.
    * - Otherwise, if "aud" contains the canonical /mcp URI, binding holds.
-   * - Otherwise the token carries no resource information. Under the
-   *   "require" policy it is rejected (full MCP authorization compliance);
-   *   under the interim "audit" policy it is accepted with an audit log
-   *   entry, because the installed contributed releases (simple_oauth
-   *   6.1.1 + simple_oauth_21 1.13.0) do not bind the resource parameter
-   *   into issued tokens. This is a documented, temporary gap, not a
-   *   permanent policy; see docs/oauth-resource-binding-gap.md.
+   * - Otherwise the token carries no verifiable resource information. This
+   *   includes opaque tokens and tokens presented outside the Authorization
+   *   header, whose claims cannot be inspected at all. Under the "require"
+   *   policy (the shipped default) every such token is rejected — resource
+   *   binding must be verifiable, never assumed. Under the interim "audit"
+   *   policy they are accepted with an audit log entry, for deployments that
+   *   cannot apply the bundled RFC 8707 patches; see
+   *   docs/patches/simple-oauth-rfc8707.md.
    */
   private function checkResourceAudience(Request $request, TokenAuthUser $account): ?string {
-    $token = BearerToken::fromRequest($request);
-    if ($token === NULL) {
-      return NULL;
-    }
-    $claims = $token->unsafeClaims();
-    if ($claims === NULL) {
-      return NULL;
-    }
+    $claims = BearerToken::fromRequest($request)?->unsafeClaims();
 
-    $expected = $this->canonicalResourceUri($request);
-    $asStringList = static function (mixed $value): array {
-      return \is_array($value) ? array_map('strval', $value) : (\is_string($value) ? [$value] : []);
-    };
+    if (\is_array($claims)) {
+      $expected = $this->canonicalResourceUri($request);
+      $asStringList = static function (mixed $value): array {
+        return \is_array($value) ? array_map('strval', $value) : (\is_string($value) ? [$value] : []);
+      };
 
-    $resourceClaims = $asStringList($claims['resource'] ?? NULL);
-    if ($resourceClaims !== []) {
-      return \in_array($expected, $resourceClaims, TRUE)
-        ? NULL
-        : 'The access token was issued for a different resource.';
-    }
+      $resourceClaims = $asStringList($claims['resource'] ?? NULL);
+      if ($resourceClaims !== []) {
+        return \in_array($expected, $resourceClaims, TRUE)
+          ? NULL
+          : 'The access token was issued for a different resource.';
+      }
 
-    $audClaims = $asStringList($claims['aud'] ?? NULL);
-    if (\in_array($expected, $audClaims, TRUE)) {
-      return NULL;
+      $audClaims = $asStringList($claims['aud'] ?? NULL);
+      if (\in_array($expected, $audClaims, TRUE)) {
+        return NULL;
+      }
     }
 
-    // No usable resource information in the token.
+    // No verifiable resource information in the token.
     $policy = (string) ($this->configFactory->get('drupal_mcp.settings')->get('resource_binding') ?: 'audit');
     if ($policy === 'require') {
       return 'The access token does not include an audience binding for this resource.';
