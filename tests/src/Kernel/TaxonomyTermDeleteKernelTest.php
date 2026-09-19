@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\drupal_mcp\Kernel;
 
-use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\drupal_mcp\Mutation\TaxonomyMutationException;
 use Drupal\drupal_mcp\Mutation\TaxonomyTermMutator;
 use Drupal\KernelTests\KernelTestBase;
@@ -44,11 +43,6 @@ final class TaxonomyTermDeleteKernelTest extends KernelTestBase {
   private TaxonomyTermMutator $mutator;
 
   /**
-   * Mutable account proxy used to exercise native access.
-   */
-  private AccountProxyInterface $currentUser;
-
-  /**
    * {@inheritdoc}
    */
   protected function setUp(): void {
@@ -62,11 +56,9 @@ final class TaxonomyTermDeleteKernelTest extends KernelTestBase {
       ->set('writable_vocabularies', ['tags'])
       ->set('destructive_mutations.taxonomy_terms', TRUE)
       ->save();
-    $this->currentUser = $this->container->get('current_user');
     $this->mutator = new TaxonomyTermMutator(
       $this->container->get('entity_type.manager'),
       $this->container->get('entity_field.manager'),
-      $this->currentUser,
       $this->container->get('config.factory'),
       $this->container->get('lock'),
       $this->container->get('logger.channel.drupal_mcp'),
@@ -88,16 +80,15 @@ final class TaxonomyTermDeleteKernelTest extends KernelTestBase {
       'confirm_term_name' => 'Secret label',
     ];
 
-    $this->currentUser->setAccount($allowed);
-    $this->assertFailure('revision_conflict', fn (): array => $this->mutator->delete(array_replace($command, ['expected_revision_id' => 999999])));
-    $this->assertFailure('target_mismatch', fn (): array => $this->mutator->delete(array_replace($command, ['confirm_term_name' => 'Wrong'])));
+    $this->assertFailure('revision_conflict', fn (): array => $this->mutator->delete($allowed, array_replace($command, ['expected_revision_id' => 999999])));
+    $this->assertFailure('target_mismatch', fn (): array => $this->mutator->delete($allowed, array_replace($command, ['confirm_term_name' => 'Wrong'])));
 
     $child = Term::create(['vid' => 'tags', 'name' => 'Child', 'parent' => [['target_id' => $term->id()]]]);
     $child->save();
-    $this->assertFailure('target_referenced', fn (): array => $this->mutator->delete($command));
+    $this->assertFailure('target_referenced', fn (): array => $this->mutator->delete($allowed, $command));
     $child->delete();
 
-    $result = $this->mutator->delete($command);
+    $result = $this->mutator->delete($allowed, $command);
     $this->assertSame([
       'id' => (int) $term->id(),
       'vocabulary' => 'tags',

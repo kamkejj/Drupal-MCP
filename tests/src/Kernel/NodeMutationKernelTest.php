@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\drupal_mcp\Kernel;
 
-use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\field\Entity\FieldStorageConfig;
 use Drupal\filter\Entity\FilterFormat;
@@ -17,6 +16,7 @@ use Drupal\taxonomy\Entity\Vocabulary;
 use Drupal\user\Entity\Role;
 use Drupal\user\Entity\User;
 use Drupal\user\UserInterface;
+use Drupal\Tests\drupal_mcp\Traits\TokenCallerTrait;
 use Drupal\drupal_mcp\Mutation\NodeMutationException;
 use Drupal\drupal_mcp\Mutation\NodeMutator;
 use PHPUnit\Framework\Attributes\Group;
@@ -28,6 +28,8 @@ use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 #[Group('drupal_mcp')]
 #[RunTestsInSeparateProcesses]
 final class NodeMutationKernelTest extends KernelTestBase {
+
+  use TokenCallerTrait;
 
   /**
    * Excludes settings from strict schema checks.
@@ -49,6 +51,8 @@ final class NodeMutationKernelTest extends KernelTestBase {
     'text',
     'filter',
     'file',
+    'image',
+    'options',
     'node',
     'taxonomy',
     'serialization',
@@ -65,10 +69,6 @@ final class NodeMutationKernelTest extends KernelTestBase {
   private NodeMutator $mutator;
 
   /**
-   * The switchable current account. */
-  private AccountProxyInterface $currentUser;
-
-  /**
    * The authorized node writer. */
   private UserInterface $writer;
 
@@ -80,8 +80,10 @@ final class NodeMutationKernelTest extends KernelTestBase {
     $this->installEntitySchema('user');
     $this->installEntitySchema('node');
     $this->installEntitySchema('taxonomy_term');
+    $this->installEntitySchema('consumer');
+    $this->installEntitySchema('oauth2_token');
     $this->installSchema('node', ['node_access']);
-    $this->installConfig(['system', 'filter', 'node', 'drupal_mcp']);
+    $this->installConfig(['system', 'user', 'filter', 'node', 'drupal_mcp']);
 
     NodeType::create(['type' => 'article', 'name' => 'Article'])->save();
     NodeType::create(['type' => 'page', 'name' => 'Page'])->save();
@@ -146,15 +148,12 @@ final class NodeMutationKernelTest extends KernelTestBase {
     ])->save();
     $this->createUser('root-placeholder', []);
     $this->writer = $this->createUser('writer', ['mcp_writer']);
-    $this->currentUser = $this->container->get('current_user');
-    $this->currentUser->setAccount($this->writer);
     $this->container->get('config.factory')->getEditable('drupal_mcp.settings')
       ->set('mutation_families.node', TRUE)
       ->set('writable_node_bundles', ['article'])
       ->save();
     $this->mutator = new NodeMutator(
       $this->container->get('entity_type.manager'),
-      $this->currentUser,
       $this->container->get('config.factory'),
       $this->container->get('lock'),
       $this->container->get('logger.channel.drupal_mcp'),
@@ -166,7 +165,7 @@ final class NodeMutationKernelTest extends KernelTestBase {
    */
   public function testCreateAndConfigurationGates(): void {
     $term = $this->term('Tagged');
-    $created = $this->mutator->create([
+    $created = $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => ' Hello ',
       'field_mcp_text' => ['value' => '<em>safe</em>', 'format' => 'mcp_text'],
@@ -215,21 +214,19 @@ final class NodeMutationKernelTest extends KernelTestBase {
    */
   public function testNativeAndFieldAccessDenials(): void {
     $unprivileged = $this->createUser('unprivileged', []);
-    $this->currentUser->setAccount($unprivileged);
-    $this->assertCreateFailure('entity_access_denied', ['type' => 'article', 'title' => 'Denied']);
+    $this->assertCreateFailure('entity_access_denied', ['type' => 'article', 'title' => 'Denied'], $unprivileged);
 
     $node = $this->node('Existing');
-    $this->assertFailure('entity_access_denied', fn () => $this->mutator->update([
+    $this->assertFailure('entity_access_denied', fn () => $this->mutator->update($this->caller($unprivileged), [
       'id' => (int) $node->id(),
       'expected_revision_id' => (int) $node->getRevisionId(),
       'changes' => ['title' => 'Denied update'],
     ]));
 
-    $this->currentUser->setAccount($this->writer);
     $this->container->get('state')->set('drupal_mcp_test.denied_fields', ['field_mcp_text']);
     $this->container->get('state')->set('drupal_mcp_test.denied_field_operations', ['edit']);
     $this->resetAccessCaches();
-    $this->assertFailure('field_not_writable', fn () => $this->mutator->update([
+    $this->assertFailure('field_not_writable', fn () => $this->mutator->update($this->caller(), [
       'id' => (int) $node->id(),
       'expected_revision_id' => (int) $node->getRevisionId(),
       'changes' => ['field_mcp_text' => ['value' => 'Blocked', 'format' => 'mcp_text']],
@@ -240,17 +237,17 @@ final class NodeMutationKernelTest extends KernelTestBase {
    * Tests malformed values and formatted text format permissions.
    */
   public function testFormattedTextPermissions(): void {
-    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Missing format',
       'field_mcp_text' => ['value' => 'x', 'format' => 'missing'],
     ]));
-    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Malformed format',
       'field_mcp_text' => ['value' => 'x'],
     ]));
-    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Unauthorized format',
       'field_mcp_text' => ['value' => 'x', 'format' => 'mcp_private'],
@@ -263,17 +260,17 @@ final class NodeMutationKernelTest extends KernelTestBase {
   public function testEntityReferenceRules(): void {
     $term = $this->term('Tagged');
     $foreign = $this->term('Foreign', 'other');
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Missing target',
       'field_mcp_tags' => [999999],
     ]));
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Wrong bundle',
       'field_mcp_tags' => [(int) $foreign->id()],
     ]));
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Malformed refs',
       'field_mcp_tags' => 'tags',
@@ -282,7 +279,7 @@ final class NodeMutationKernelTest extends KernelTestBase {
     $this->container->get('state')->set('drupal_mcp_test.denied_entities', ['taxonomy_term:' . $term->id()]);
     $this->container->get('state')->set('drupal_mcp_test.denied_entity_operations', ['view']);
     $this->resetAccessCaches();
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->create($this->caller(), [
       'type' => 'article',
       'title' => 'Hidden target',
       'field_mcp_tags' => [(int) $term->id()],
@@ -318,7 +315,7 @@ final class NodeMutationKernelTest extends KernelTestBase {
       'changes' => [],
     ]);
 
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->update([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->update($this->caller(), [
       'id' => $id,
       'expected_revision_id' => $revision,
       'changes' => ['title' => 'Must not leak', 'field_mcp_tags' => [999999]],
@@ -327,7 +324,7 @@ final class NodeMutationKernelTest extends KernelTestBase {
     $this->assertInstanceOf(NodeInterface::class, $reloaded);
     $this->assertSame('Original', $reloaded->getTitle());
 
-    $updated = $this->mutator->update([
+    $updated = $this->mutator->update($this->caller(), [
       'id' => $id,
       'expected_revision_id' => $revision,
       'changes' => ['title' => 'Updated', 'field_mcp_number' => 3],
@@ -363,6 +360,12 @@ final class NodeMutationKernelTest extends KernelTestBase {
   }
 
   /**
+   * Returns the explicit mutation caller, defaulting to the writer. */
+  private function caller(?UserInterface $as = NULL) {
+    return $this->tokenCaller($as ?? $this->writer);
+  }
+
+  /**
    * Creates and saves a user fixture. */
   private function createUser(string $name, array $roles): UserInterface {
     $user = User::create(['name' => $name, 'status' => 1, 'roles' => $roles]);
@@ -384,14 +387,14 @@ final class NodeMutationKernelTest extends KernelTestBase {
 
   /**
    * Asserts a categorized create failure. */
-  private function assertCreateFailure(string $category, array $command): void {
-    $this->assertFailure($category, fn () => $this->mutator->create($command));
+  private function assertCreateFailure(string $category, array $command, ?UserInterface $as = NULL): void {
+    $this->assertFailure($category, fn () => $this->mutator->create($this->caller($as), $command));
   }
 
   /**
    * Asserts a categorized update failure. */
-  private function assertUpdateFailure(string $category, array $command): void {
-    $this->assertFailure($category, fn () => $this->mutator->update($command));
+  private function assertUpdateFailure(string $category, array $command, ?UserInterface $as = NULL): void {
+    $this->assertFailure($category, fn () => $this->mutator->update($this->caller($as), $command));
   }
 
   /**

@@ -45,7 +45,7 @@ if node --help 2>&1 | grep -q -- '--use-system-ca'; then
 fi
 
 if [[ -n "${MCP_ACCESS_TOKEN:-}" ]]; then
-  ACCESS_TOKEN="$MCP_ACCESS_TOKEN"
+  ACCESS_TOKEN=$MCP_ACCESS_TOKEN
 else
   if [[ "$SERVER_URL" != */mcp ]]; then
     echo "Set MCP_BASE_URL when MCP_SERVER_URL does not end in /mcp." >&2

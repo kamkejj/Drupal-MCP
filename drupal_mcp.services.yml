@@ -3,6 +3,12 @@ services:
     parent: logger.channel_base
     arguments: ['drupal_mcp']
 
+  Drupal\drupal_mcp\Mcp\Limits:
+    class: Drupal\drupal_mcp\Mcp\Limits
+    arguments:
+      - '@config.factory'
+  drupal_mcp.limits: '@Drupal\drupal_mcp\Mcp\Limits'
+
   Drupal\drupal_mcp\Mcp\ToolRegistry:
     class: Drupal\drupal_mcp\Mcp\ToolRegistry
     arguments:
@@ -15,7 +21,6 @@ services:
     class: Drupal\drupal_mcp\Mcp\SessionStore
     arguments:
       - '@keyvalue.expirable'
-      - '@current_user'
       - '@datetime.time'
       - '@config.factory'
   drupal_mcp.session_store: '@Drupal\drupal_mcp\Mcp\SessionStore'
@@ -37,15 +42,35 @@ services:
       - '@logger.channel.drupal_mcp'
   drupal_mcp.access_policy: '@Drupal\drupal_mcp\Access\McpAccessPolicy'
 
+  Drupal\drupal_mcp\Http\EndpointAllowlist:
+    class: Drupal\drupal_mcp\Http\EndpointAllowlist
+    arguments:
+      - '@config.factory'
+  drupal_mcp.endpoint_allowlist: '@Drupal\drupal_mcp\Http\EndpointAllowlist'
+
   Drupal\drupal_mcp\Http\McpRequestValidator:
     class: Drupal\drupal_mcp\Http\McpRequestValidator
     arguments:
-      - '@config.factory'
+      - '@drupal_mcp.endpoint_allowlist'
   drupal_mcp.request_validator: '@Drupal\drupal_mcp\Http\McpRequestValidator'
+
+  Drupal\drupal_mcp\Mcp\SignedCursor:
+    class: Drupal\drupal_mcp\Mcp\SignedCursor
+  drupal_mcp.signed_cursor: '@Drupal\drupal_mcp\Mcp\SignedCursor'
 
   Drupal\drupal_mcp\Entity\AccessibleEntityPager:
     class: Drupal\drupal_mcp\Entity\AccessibleEntityPager
+    arguments:
+      - '@drupal_mcp.signed_cursor'
   drupal_mcp.accessible_entity_pager: '@Drupal\drupal_mcp\Entity\AccessibleEntityPager'
+
+  Drupal\drupal_mcp\Entity\EntityReadTools:
+    class: Drupal\drupal_mcp\Entity\EntityReadTools
+    arguments:
+      - '@entity_type.manager'
+      - '@drupal_mcp.accessible_entity_pager'
+      - '@drupal_mcp.limits'
+  drupal_mcp.entity_read_tools: '@Drupal\drupal_mcp\Entity\EntityReadTools'
 
   Drupal\drupal_mcp\Mcp\ServerFactory:
     class: Drupal\drupal_mcp\Mcp\ServerFactory
@@ -53,14 +78,13 @@ services:
       - '@drupal_mcp.tool_registry'
       - '@drupal_mcp.session_store'
       - '@logger.channel.drupal_mcp'
-      - '@config.factory'
       - '@extension.list.module'
+      - '@drupal_mcp.limits'
   drupal_mcp.server_factory: '@Drupal\drupal_mcp\Mcp\ServerFactory'
 
   Drupal\drupal_mcp\Tool\SiteToolProvider:
     class: Drupal\drupal_mcp\Tool\SiteToolProvider
     arguments:
-      - '@current_user'
       - '@config.factory'
       - '@drupal_mcp.access_policy'
     tags:
@@ -78,10 +102,8 @@ services:
   Drupal\drupal_mcp\Tool\ContentToolProvider:
     class: Drupal\drupal_mcp\Tool\ContentToolProvider
     arguments:
-      - '@entity_type.manager'
-      - '@current_user'
       - '@config.factory'
-      - '@drupal_mcp.accessible_entity_pager'
+      - '@drupal_mcp.entity_read_tools'
     tags:
       - { name: drupal_mcp.tool_provider }
 
@@ -89,9 +111,8 @@ services:
     class: Drupal\drupal_mcp\Tool\TaxonomyToolProvider
     arguments:
       - '@entity_type.manager'
-      - '@current_user'
       - '@config.factory'
-      - '@drupal_mcp.accessible_entity_pager'
+      - '@drupal_mcp.entity_read_tools'
     tags:
       - { name: drupal_mcp.tool_provider }
 
@@ -100,7 +121,6 @@ services:
     arguments:
       - '@entity_type.manager'
       - '@entity_field.manager'
-      - '@current_user'
       - '@config.factory'
       - '@lock'
       - '@logger.channel.drupal_mcp'
@@ -110,18 +130,22 @@ services:
     class: Drupal\drupal_mcp\Mutation\NodeMutator
     arguments:
       - '@entity_type.manager'
-      - '@current_user'
       - '@config.factory'
       - '@lock'
       - '@logger.channel.drupal_mcp'
   drupal_mcp.node_mutator: '@Drupal\drupal_mcp\Mutation\NodeMutator'
 
+  Drupal\drupal_mcp\Mutation\MutationExecutor:
+    class: Drupal\drupal_mcp\Mutation\MutationExecutor
+    arguments:
+      - '@drupal_mcp.idempotency'
+  drupal_mcp.mutation_executor: '@Drupal\drupal_mcp\Mutation\MutationExecutor'
+
   Drupal\drupal_mcp\Tool\TaxonomyMutationToolProvider:
     class: Drupal\drupal_mcp\Tool\TaxonomyMutationToolProvider
     arguments:
       - '@drupal_mcp.taxonomy_term_mutator'
-      - '@drupal_mcp.idempotency'
-      - '@current_user'
+      - '@drupal_mcp.mutation_executor'
       - '@config.factory'
     tags:
       - { name: drupal_mcp.tool_provider }
@@ -130,8 +154,7 @@ services:
     class: Drupal\drupal_mcp\Tool\ContentMutationToolProvider
     arguments:
       - '@drupal_mcp.node_mutator'
-      - '@drupal_mcp.idempotency'
-      - '@current_user'
+      - '@drupal_mcp.mutation_executor'
       - '@config.factory'
       - '@entity_field.manager'
     tags:
@@ -140,10 +163,7 @@ services:
   Drupal\drupal_mcp\Tool\BlockToolProvider:
     class: Drupal\drupal_mcp\Tool\BlockToolProvider
     arguments:
-      - '@entity_type.manager'
-      - '@current_user'
-      - '@config.factory'
-      - '@drupal_mcp.accessible_entity_pager'
+      - '@drupal_mcp.entity_read_tools'
     tags:
       - { name: drupal_mcp.tool_provider }
 
@@ -152,9 +172,7 @@ services:
     arguments:
       - '@entity_type.manager'
       - '@menu.link_tree'
-      - '@current_user'
-      - '@config.factory'
-      - '@drupal_mcp.accessible_entity_pager'
+      - '@drupal_mcp.entity_read_tools'
     tags:
       - { name: drupal_mcp.tool_provider }
 
@@ -162,18 +180,15 @@ services:
     class: Drupal\drupal_mcp\Tool\FileToolProvider
     arguments:
       - '@entity_type.manager'
-      - '@current_user'
       - '@file.usage'
+      - '@drupal_mcp.entity_read_tools'
     tags:
       - { name: drupal_mcp.tool_provider }
 
   Drupal\drupal_mcp\Tool\UserToolProvider:
     class: Drupal\drupal_mcp\Tool\UserToolProvider
     arguments:
-      - '@entity_type.manager'
-      - '@current_user'
-      - '@config.factory'
-      - '@drupal_mcp.accessible_entity_pager'
+      - '@drupal_mcp.entity_read_tools'
     tags:
       - { name: drupal_mcp.tool_provider }
 
@@ -183,7 +198,6 @@ services:
       - '@config.factory'
       - '@logger.channel.drupal_mcp'
       - '%app.root%'
-      - '@current_user'
       - '@request_stack'
       - '@lock'
   drupal_mcp.drush_runner: '@Drupal\drupal_mcp\Diagnostics\DrushRunner'
@@ -197,10 +211,11 @@ services:
     arguments:
       - '@drupal_mcp.database_connection'
       - '@config.factory'
-      - '@current_user'
+      - '@drupal_mcp.limits'
       - '@request_stack'
       - '@logger.channel.drupal_mcp'
       - '@lock'
+      - '@drupal_mcp.signed_cursor'
   drupal_mcp.database_inspector: '@Drupal\drupal_mcp\Diagnostics\DatabaseInspector'
 
   Drupal\drupal_mcp\Tool\DatabaseToolProvider:

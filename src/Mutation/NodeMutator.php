@@ -9,7 +9,7 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Lock\LockBackendInterface;
-use Drupal\Core\Session\AccountProxyInterface;
+use Drupal\Core\Session\AccountInterface;
 use Drupal\filter\FilterFormatInterface;
 use Drupal\node\NodeInterface;
 use Psr\Log\LoggerInterface;
@@ -21,7 +21,7 @@ use Psr\Log\LoggerInterface;
  * other base field is protected and all remaining writes go through
  * configured fields, each gated by edit access and entity validation.
  */
-final class NodeMutator {
+final class NodeMutator implements EntityMutatorInterface {
 
   private const FORMATTED_TEXT_TYPES = ['text', 'text_long', 'text_with_summary'];
   private const REFERENCE_TYPES = ['entity_reference', 'taxonomy_term_reference'];
@@ -31,47 +31,46 @@ final class NodeMutator {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
-    private readonly AccountProxyInterface $currentUser,
     private readonly ConfigFactoryInterface $configFactory,
     private readonly LockBackendInterface $lock,
     private readonly LoggerInterface $logger,
   ) {}
 
   /**
-   * Creates a node after all policy, access, reference, and validation checks.
+   * {@inheritdoc}
    */
-  public function create(array $command): array {
+  public function create(AccountInterface $account, array $command): array {
     $started = microtime(TRUE);
     $bundle = (string) ($command['type'] ?? '');
     try {
       $this->assertEnabledBundle($bundle);
       $storage = $this->entityTypeManager->getStorage('node');
       $access = $this->entityTypeManager->getAccessControlHandler('node')
-        ->createAccess($bundle, $this->currentUser->getAccount(), [], TRUE);
+        ->createAccess($bundle, $account, [], TRUE);
       if (!$access->isAllowed()) {
         throw $this->failure('entity_access_denied', 'Node creation is not permitted.');
       }
 
       $node = $storage->create(['type' => $bundle]);
       \assert($node instanceof NodeInterface);
-      $this->applyFields($node, $command, TRUE);
+      $this->applyFields($account, $node, $command, TRUE);
       $this->validate($node);
       $this->prepareRevision($node);
       $node->save();
       $result = $this->project($node, $this->fieldNames($command));
-      $this->audit('create', 'success', $bundle, (int) $node->id(), $result['revision_id'], $started, $command);
+      $this->audit('create', 'success', $bundle, (int) $node->id(), $result['revision_id'], $started, $command, $account);
       return $result;
     }
     catch (NodeMutationException $exception) {
-      $this->audit('create', $exception->category, $bundle, NULL, NULL, $started, $command);
+      $this->audit('create', $exception->category, $bundle, NULL, NULL, $started, $command, $account);
       throw $exception;
     }
   }
 
   /**
-   * Updates a node under a node-scoped lock and revision precondition.
+   * {@inheritdoc}
    */
-  public function update(array $command): array {
+  public function update(AccountInterface $account, array $command): array {
     $started = microtime(TRUE);
     $id = (int) ($command['id'] ?? 0);
     $lockName = 'drupal_mcp:node:' . $id;
@@ -88,7 +87,7 @@ final class NodeMutator {
       }
       $bundle = $node->bundle();
       $this->assertEnabledBundle($bundle);
-      if (!$node->access('update', $this->currentUser->getAccount())) {
+      if (!$node->access('update', $account)) {
         throw $this->failure('entity_access_denied', 'The node was not found or is inaccessible.');
       }
       $expected = (int) ($command['expected_revision_id'] ?? 0);
@@ -100,22 +99,22 @@ final class NodeMutator {
       if (!\is_array($changes) || $changes === []) {
         throw $this->failure('invalid_value', 'At least one change is required.');
       }
-      $this->applyFields($node, $changes, FALSE);
+      $this->applyFields($account, $node, $changes, FALSE);
       $this->validate($node);
       $this->prepareRevision($node);
       $node->save();
       $result = $this->project($node, $this->fieldNames($changes));
-      $this->audit('update', 'success', $bundle, $id, $result['revision_id'], $started, $command);
+      $this->audit('update', 'success', $bundle, $id, $result['revision_id'], $started, $command, $account);
       return $result;
     }
     catch (NodeMutationException $exception) {
       $storage->resetCache([$id]);
-      $this->audit('update', $exception->category, $bundle ?? NULL, $id ?: NULL, NULL, $started, $command);
+      $this->audit('update', $exception->category, $bundle ?? NULL, $id ?: NULL, NULL, $started, $command, $account);
       throw $exception;
     }
     catch (\Throwable $exception) {
       $storage->resetCache([$id]);
-      $this->audit('update', 'unexpected_failure', $bundle ?? NULL, $id ?: NULL, NULL, $started, $command);
+      $this->audit('update', 'unexpected_failure', $bundle ?? NULL, $id ?: NULL, NULL, $started, $command, $account);
       throw $exception;
     }
     finally {
@@ -124,13 +123,20 @@ final class NodeMutator {
   }
 
   /**
+   * {@inheritdoc}
+   */
+  public function delete(AccountInterface $account, array $command): array {
+    throw $this->failure('mutation_disabled', 'Node deletion is not supported through MCP.');
+  }
+
+  /**
    * Applies writable fields with per-type value normalization.
    */
-  private function applyFields(NodeInterface $node, array $input, bool $creating): void {
+  private function applyFields(AccountInterface $account, NodeInterface $node, array $input, bool $creating): void {
     $names = [];
     foreach (array_keys($input) as $name) {
       if (\is_string($name) && !\in_array($name, self::COMMAND_KEYS, TRUE)) {
-        $this->assertWritableField($node, $name);
+        $this->assertWritableField($account, $node, $name);
         $names[] = $name;
       }
     }
@@ -142,7 +148,7 @@ final class NodeMutator {
     }
     $before = $creating ? NULL : $this->providedValues($node, $names);
     foreach ($names as $name) {
-      $this->setField($node, $name, $input[$name]);
+      $this->setField($account, $node, $name, $input[$name]);
     }
     if (!$creating && $before === $this->providedValues($node, $names)) {
       throw $this->failure('no_changes', 'The requested update does not change the node.');
@@ -152,13 +158,13 @@ final class NodeMutator {
   /**
    * Enforces the protected base-field denylist and per-field edit access.
    */
-  private function assertWritableField(NodeInterface $node, string $name): void {
+  private function assertWritableField(AccountInterface $account, NodeInterface $node, string $name): void {
     $definition = $node->getFieldDefinition($name);
     if ($definition === NULL
       || ($name !== 'title' && $definition instanceof BaseFieldDefinition)) {
       throw $this->failure('field_not_writable', sprintf('Field "%s" is not writable.', $name));
     }
-    if (!$node->get($name)->access('edit', $this->currentUser->getAccount())) {
+    if (!$node->get($name)->access('edit', $account)) {
       throw $this->failure('field_not_writable', sprintf('Field "%s" is not writable.', $name));
     }
   }
@@ -166,7 +172,7 @@ final class NodeMutator {
   /**
    * Sets one field with type-aware normalization.
    */
-  private function setField(NodeInterface $node, string $name, mixed $value): void {
+  private function setField(AccountInterface $account, NodeInterface $node, string $name, mixed $value): void {
     if ($name === 'title') {
       if (!\is_string($value) || trim($value) === '') {
         throw $this->failure('invalid_value', 'The node title must be a non-empty string.');
@@ -177,10 +183,10 @@ final class NodeMutator {
     $definition = $node->getFieldDefinition($name);
     $type = $definition->getType();
     if (\in_array($type, self::FORMATTED_TEXT_TYPES, TRUE)) {
-      $items = [$this->normalizeFormattedText($value)];
+      $items = [$this->normalizeFormattedText($account, $value)];
     }
     elseif (\in_array($type, self::REFERENCE_TYPES, TRUE)) {
-      $items = $this->normalizeReferences($definition, $value);
+      $items = $this->normalizeReferences($account, $definition, $value);
     }
     else {
       $items = \is_array($value) ? $value : [$value];
@@ -191,12 +197,12 @@ final class NodeMutator {
   /**
    * Normalizes and authorizes a formatted text item.
    */
-  private function normalizeFormattedText(mixed $value): array {
+  private function normalizeFormattedText(AccountInterface $account, mixed $value): array {
     if (!\is_array($value) || !\is_string($value['value'] ?? NULL) || !\is_string($value['format'] ?? NULL)) {
       throw $this->failure('invalid_text_format', 'Text fields require string value and format properties.');
     }
     $format = $this->entityTypeManager->getStorage('filter_format')->load($value['format']);
-    if (!$format instanceof FilterFormatInterface || !$format->access('use', $this->currentUser->getAccount())) {
+    if (!$format instanceof FilterFormatInterface || !$format->access('use', $account)) {
       throw $this->failure('invalid_text_format', 'The requested text format is not available.');
     }
     return ['value' => $value['value'], 'format' => $value['format']];
@@ -205,7 +211,7 @@ final class NodeMutator {
   /**
    * Normalizes and validates entity references.
    */
-  private function normalizeReferences(FieldDefinitionInterface $definition, mixed $value): array {
+  private function normalizeReferences(AccountInterface $account, FieldDefinitionInterface $definition, mixed $value): array {
     if (!\is_array($value) || (!array_is_list($value) && !\is_int($value))) {
       throw $this->failure('invalid_reference', 'References must be a list of entity IDs.');
     }
@@ -222,7 +228,7 @@ final class NodeMutator {
       $target = $targets[$id] ?? NULL;
       if (!\is_int($id) || $id < 1 || $target === NULL
         || ($bundles !== [] && !\in_array($target->bundle(), $bundles, TRUE))
-        || !$target->access('view', $this->currentUser->getAccount())) {
+        || !$target->access('view', $account)) {
         throw $this->failure('invalid_reference', 'A reference is invalid or inaccessible.');
       }
       $items[] = ['target_id' => $id];
@@ -340,8 +346,7 @@ final class NodeMutator {
   /**
    * Records content-free mutation audit metadata.
    */
-  private function audit(string $operation, string $outcome, ?string $bundle, ?int $nodeId, ?int $revisionId, float $started, array $command): void {
-    $account = $this->currentUser->getAccount();
+  private function audit(string $operation, string $outcome, ?string $bundle, ?int $nodeId, ?int $revisionId, float $started, array $command, AccountInterface $account): void {
     $consumer = method_exists($account, 'getConsumer') ? $account->getConsumer()->getClientId() : NULL;
     $key = \is_string($command['idempotency_key'] ?? NULL) ? $command['idempotency_key'] : '';
     $this->logger->notice('MCP node mutation audit.', [

@@ -11,7 +11,8 @@ use Drupal\Core\Site\Settings;
  */
 final class ReadOnlyDatabaseConnection {
 
-  private const MAX_QUERY_SECONDS = 5;
+  private const MARIADB_TIMEOUT_SQL = 'SET SESSION max_statement_time = 5';
+  private const MYSQL_TIMEOUT_SQL = 'SET SESSION MAX_EXECUTION_TIME = 5000';
 
   /**
    * Cached SELECT-only database connection.
@@ -48,10 +49,10 @@ final class ReadOnlyDatabaseConnection {
     );
     $serverVersion = (string) $this->connection->getAttribute(\PDO::ATTR_SERVER_VERSION);
     if (str_contains($serverVersion, 'MariaDB')) {
-      $this->connection->exec('SET SESSION max_statement_time = ' . self::MAX_QUERY_SECONDS);
+      $this->connection->query(self::MARIADB_TIMEOUT_SQL);
     }
     else {
-      $this->connection->exec('SET SESSION MAX_EXECUTION_TIME = ' . (self::MAX_QUERY_SECONDS * 1000));
+      $this->connection->query(self::MYSQL_TIMEOUT_SQL);
     }
     return $this->connection;
   }

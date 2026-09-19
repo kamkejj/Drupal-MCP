@@ -8,7 +8,10 @@ use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\drupal_mcp\Diagnostics\ApprovedDrushCommands;
 use Drupal\drupal_mcp\Diagnostics\DrushRunner;
 use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Mcp\ToolFamily;
 use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
+use Drupal\drupal_mcp\Mcp\ToolSchema;
+use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
 
@@ -54,22 +57,17 @@ final class DrushToolProvider implements ToolProviderInterface {
         name: 'drupal_drush_run',
         title: 'Run approved Drush diagnostic',
         description: 'Runs one site-approved, non-destructive Drush diagnostic command with typed parameters. Only command IDs approved by the site administrator are accepted; unknown arguments are rejected before execution. Privileged: requires "administer site configuration".',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'command' => ['type' => 'string', 'enum' => $enum, 'description' => 'Approved diagnostic command ID.'],
-            'arguments' => (object) [
-              'type' => 'object',
-              'description' => 'Typed parameters for the selected command.',
-              'properties' => (object) $parameters,
-              'additionalProperties' => FALSE,
-            ],
+        inputSchema: ToolSchema::object([
+          'command' => ['type' => 'string', 'enum' => $enum, 'description' => 'Approved diagnostic command ID.'],
+          'arguments' => (object) [
+            'type' => 'object',
+            'description' => 'Typed parameters for the selected command.',
+            'properties' => (object) $parameters,
+            'additionalProperties' => FALSE,
           ],
-          'required' => ['command'],
-          'additionalProperties' => FALSE,
-        ],
-        handler: fn (array $args): array => $this->run((string) ($args['command'] ?? ''), (array) ($args['arguments'] ?? [])),
-        family: 'drush',
+        ], ['command']),
+        handler: fn (array $args, TokenAuthUser $caller): array => $this->run($caller, (string) ($args['command'] ?? ''), (array) ($args['arguments'] ?? [])),
+        family: ToolFamily::Drush,
         extraPermissions: ['administer site configuration'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
@@ -82,7 +80,7 @@ final class DrushToolProvider implements ToolProviderInterface {
    * @return array<string, mixed>
    *   The operation result.
    */
-  private function run(string $commandId, array $arguments): array {
+  private function run(TokenAuthUser $caller, string $commandId, array $arguments): array {
     $settings = $this->configFactory->get('drupal_mcp.settings');
     $enabled = (array) ($settings->get('drush_commands') ?? []);
     $specs = ApprovedDrushCommands::all();
@@ -90,7 +88,7 @@ final class DrushToolProvider implements ToolProviderInterface {
     if (!isset($specs[$commandId]) || !\in_array($commandId, $enabled, TRUE)) {
       throw new ToolCallException(sprintf('Drush diagnostic "%s" is not approved on this site.', $commandId));
     }
-    return $this->runner->run($specs[$commandId], $arguments);
+    return $this->runner->run($caller, $specs[$commandId], $arguments);
   }
 
 }

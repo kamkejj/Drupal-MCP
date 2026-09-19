@@ -10,7 +10,7 @@ use Drupal\Core\Entity\ContentEntityTypeInterface;
 use Drupal\Core\Entity\EntityFieldManagerInterface;
 use Drupal\Core\Field\FieldStorageDefinitionInterface;
 use Drupal\Core\Lock\LockBackendInterface;
-use Drupal\Core\Session\AccountProxyInterface;
+use Drupal\Core\Session\AccountInterface;
 use Drupal\filter\FilterFormatInterface;
 use Drupal\taxonomy\TermInterface;
 use Psr\Log\LoggerInterface;
@@ -18,30 +18,29 @@ use Psr\Log\LoggerInterface;
 /**
  * Owns the complete policy and persistence boundary for taxonomy mutations.
  */
-final class TaxonomyTermMutator {
+final class TaxonomyTermMutator implements EntityMutatorInterface {
 
   public const WRITABLE_FIELDS = ['name', 'description', 'parent', 'weight'];
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly EntityFieldManagerInterface $entityFieldManager,
-    private readonly AccountProxyInterface $currentUser,
     private readonly ConfigFactoryInterface $configFactory,
     private readonly LockBackendInterface $lock,
     private readonly LoggerInterface $logger,
   ) {}
 
   /**
-   * Creates a term after all policy, access, reference, and validation checks.
+   * {@inheritdoc}
    */
-  public function create(array $command): array {
+  public function create(AccountInterface $account, array $command): array {
     $started = microtime(TRUE);
     $vocabulary = (string) ($command['vocabulary'] ?? '');
     try {
       $this->assertEnabledVocabulary($vocabulary);
       $storage = $this->entityTypeManager->getStorage('taxonomy_term');
       $access = $this->entityTypeManager->getAccessControlHandler('taxonomy_term')
-        ->createAccess($vocabulary, $this->currentUser->getAccount(), [], TRUE);
+        ->createAccess($vocabulary, $account, [], TRUE);
       if (!$access->isAllowed()) {
         throw $this->failure('entity_access_denied', 'Taxonomy term creation is not permitted.');
       }
@@ -49,25 +48,25 @@ final class TaxonomyTermMutator {
       $values = ['vid' => $vocabulary];
       $term = $storage->create($values);
       \assert($term instanceof TermInterface);
-      $this->applyFields($term, $command, TRUE);
+      $this->applyFields($account, $term, $command, TRUE);
       $this->assertUniqueName($term);
       $this->validate($term);
       $this->prepareRevision($term);
       $term->save();
       $result = $this->project($term);
-      $this->audit('create', 'success', $vocabulary, (int) $term->id(), $result['revision_id'], $started, $command);
+      $this->audit('create', 'success', $vocabulary, (int) $term->id(), $result['revision_id'], $started, $command, $account);
       return $result;
     }
     catch (TaxonomyMutationException $exception) {
-      $this->audit('create', $exception->category, $vocabulary, NULL, NULL, $started, $command);
+      $this->audit('create', $exception->category, $vocabulary, NULL, NULL, $started, $command, $account);
       throw $exception;
     }
   }
 
   /**
-   * Updates a term under a term-scoped lock and revision precondition.
+   * {@inheritdoc}
    */
-  public function update(array $command): array {
+  public function update(AccountInterface $account, array $command): array {
     $started = microtime(TRUE);
     $id = (int) ($command['id'] ?? 0);
     $lockName = 'drupal_mcp:taxonomy_term:' . $id;
@@ -84,7 +83,7 @@ final class TaxonomyTermMutator {
       }
       $vocabulary = $term->bundle();
       $this->assertEnabledVocabulary($vocabulary);
-      if (!$term->access('update', $this->currentUser->getAccount())) {
+      if (!$term->access('update', $account)) {
         throw $this->failure('entity_access_denied', 'The taxonomy term was not found or is inaccessible.');
       }
       $expected = (int) ($command['expected_revision_id'] ?? 0);
@@ -97,7 +96,7 @@ final class TaxonomyTermMutator {
         throw $this->failure('invalid_value', 'At least one change is required.');
       }
       $before = $this->mutableValues($term);
-      $this->applyFields($term, $changes, FALSE);
+      $this->applyFields($account, $term, $changes, FALSE);
       $this->assertUniqueName($term);
       if ($before === $this->mutableValues($term)) {
         throw $this->failure('no_changes', 'The requested update does not change the taxonomy term.');
@@ -106,7 +105,7 @@ final class TaxonomyTermMutator {
       $this->prepareRevision($term);
       $term->save();
       $result = $this->project($term);
-      $this->audit('update', 'success', $vocabulary, $id, $result['revision_id'], $started, $command);
+      $this->audit('update', 'success', $vocabulary, $id, $result['revision_id'], $started, $command, $account);
       return $result;
     }
     catch (TaxonomyMutationException $exception) {
@@ -114,7 +113,7 @@ final class TaxonomyTermMutator {
       // operation in this request must observe persisted state, not a failed
       // mutation's in-memory entity.
       $storage->resetCache([$id]);
-      $this->audit('update', $exception->category, $vocabulary ?? NULL, $id ?: NULL, NULL, $started, $command);
+      $this->audit('update', $exception->category, $vocabulary ?? NULL, $id ?: NULL, NULL, $started, $command, $account);
       throw $exception;
     }
     catch (\Throwable $exception) {
@@ -122,7 +121,7 @@ final class TaxonomyTermMutator {
       // for the same atomicity guarantee, while preserving the original error
       // for the adapter's safe generic response.
       $storage->resetCache([$id]);
-      $this->audit('update', 'unexpected_failure', $vocabulary ?? NULL, $id ?: NULL, NULL, $started, $command);
+      $this->audit('update', 'unexpected_failure', $vocabulary ?? NULL, $id ?: NULL, NULL, $started, $command, $account);
       throw $exception;
     }
     finally {
@@ -131,9 +130,9 @@ final class TaxonomyTermMutator {
   }
 
   /**
-   * Deletes an unreferenced term under exact target preconditions.
+   * {@inheritdoc}
    */
-  public function delete(array $command): array {
+  public function delete(AccountInterface $account, array $command): array {
     $started = microtime(TRUE);
     $id = (int) ($command['id'] ?? 0);
     $lockName = 'drupal_mcp:taxonomy_term:' . $id;
@@ -154,7 +153,7 @@ final class TaxonomyTermMutator {
       }
       $vocabulary = $term->bundle();
       $this->assertEnabledVocabulary($vocabulary);
-      if (!$term->access('delete', $this->currentUser->getAccount())) {
+      if (!$term->access('delete', $account)) {
         throw $this->failure('entity_access_denied', 'The taxonomy term was not found or is inaccessible.');
       }
       $current = $this->revisionId($term);
@@ -173,11 +172,11 @@ final class TaxonomyTermMutator {
         'deleted_revision_id' => $current,
         'status' => 'deleted',
       ];
-      $this->audit('delete', 'success', $vocabulary, $id, $current, $started, $command);
+      $this->audit('delete', 'success', $vocabulary, $id, $current, $started, $command, $account);
       return $result;
     }
     catch (TaxonomyMutationException $exception) {
-      $this->audit('delete', $exception->category, $vocabulary ?? NULL, $id ?: NULL, NULL, $started, $command);
+      $this->audit('delete', $exception->category, $vocabulary ?? NULL, $id ?: NULL, NULL, $started, $command, $account);
       throw $exception;
     }
     finally {
@@ -226,7 +225,7 @@ final class TaxonomyTermMutator {
   /**
    * Applies the fixed field allowlist and checks edit access.
    */
-  private function applyFields(TermInterface $term, array $input, bool $creating): void {
+  private function applyFields(AccountInterface $account, TermInterface $term, array $input, bool $creating): void {
     $mapping = ['parents' => 'parent'];
     $allowedInput = $creating
       ? ['vocabulary', 'name', 'description', 'parents', 'weight', 'idempotency_key', '_session', '_request']
@@ -244,7 +243,7 @@ final class TaxonomyTermMutator {
         continue;
       }
       $fieldName = $mapping[$inputName] ?? $inputName;
-      if (!$term->get($fieldName)->access('edit', $this->currentUser->getAccount())) {
+      if (!$term->get($fieldName)->access('edit', $account)) {
         throw $this->failure('field_not_writable', sprintf('Field "%s" is not writable.', $inputName));
       }
       $value = $input[$inputName];
@@ -255,10 +254,10 @@ final class TaxonomyTermMutator {
         $term->set('name', trim($value));
       }
       elseif ($inputName === 'description') {
-        $term->set('description', $this->normalizeDescription($value));
+        $term->set('description', $this->normalizeDescription($account, $value));
       }
       elseif ($inputName === 'parents') {
-        $term->set('parent', $this->normalizeParents($term, $value));
+        $term->set('parent', $this->normalizeParents($account, $term, $value));
       }
       elseif ($inputName === 'weight') {
         if (!\is_int($value) || $value < -1000 || $value > 1000) {
@@ -272,12 +271,12 @@ final class TaxonomyTermMutator {
   /**
    * Normalizes and authorizes a formatted description.
    */
-  private function normalizeDescription(mixed $value): array {
+  private function normalizeDescription(AccountInterface $account, mixed $value): array {
     if (!\is_array($value) || !\is_string($value['value'] ?? NULL) || !\is_string($value['format'] ?? NULL)) {
       throw $this->failure('invalid_text_format', 'Description requires string value and format properties.');
     }
     $format = $this->entityTypeManager->getStorage('filter_format')->load($value['format']);
-    if (!$format instanceof FilterFormatInterface || !$format->access('use', $this->currentUser->getAccount())) {
+    if (!$format instanceof FilterFormatInterface || !$format->access('use', $account)) {
       throw $this->failure('invalid_text_format', 'The requested text format is not available.');
     }
     return ['value' => $value['value'], 'format' => $value['format']];
@@ -286,7 +285,7 @@ final class TaxonomyTermMutator {
   /**
    * Normalizes and validates parent references.
    */
-  private function normalizeParents(TermInterface $term, mixed $value): array {
+  private function normalizeParents(AccountInterface $account, TermInterface $term, mixed $value): array {
     if (!\is_array($value) || !array_is_list($value)) {
       throw $this->failure('invalid_reference', 'Parents must be a list of taxonomy term IDs.');
     }
@@ -303,7 +302,7 @@ final class TaxonomyTermMutator {
     }
     foreach ($parents as $parent) {
       if (!$parent instanceof TermInterface || $parent->bundle() !== $term->bundle()
-        || !$parent->access('view', $this->currentUser->getAccount())
+        || !$parent->access('view', $account)
         || ($term->id() && $this->isDescendant((int) $term->id(), (int) $parent->id()))) {
         throw $this->failure('invalid_reference', 'A parent reference is invalid or inaccessible.');
       }
@@ -445,8 +444,7 @@ final class TaxonomyTermMutator {
   /**
    * Records content-free mutation audit metadata.
    */
-  private function audit(string $operation, string $outcome, ?string $vocabulary, ?int $termId, ?int $revisionId, float $started, array $command): void {
-    $account = $this->currentUser->getAccount();
+  private function audit(string $operation, string $outcome, ?string $vocabulary, ?int $termId, ?int $revisionId, float $started, array $command, AccountInterface $account): void {
     $consumer = method_exists($account, 'getConsumer') ? $account->getConsumer()->getClientId() : NULL;
     $key = \is_string($command['idempotency_key'] ?? NULL) ? $command['idempotency_key'] : '';
     $this->logger->notice('MCP taxonomy mutation audit.', [

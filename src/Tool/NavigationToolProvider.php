@@ -4,16 +4,17 @@ declare(strict_types=1);
 
 namespace Drupal\drupal_mcp\Tool;
 
-use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Menu\MenuLinkTreeInterface;
 use Drupal\Core\Menu\MenuTreeParameters;
-use Drupal\Core\Session\AccountProxyInterface;
-use Drupal\drupal_mcp\Entity\AccessibleEntityPager;
-use Drupal\drupal_mcp\Mcp\Limits;
+use Drupal\drupal_mcp\Entity\EntityReadTools;
 use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Mcp\ToolFamily;
 use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
+use Drupal\drupal_mcp\Mcp\ToolSchema;
+use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Drupal\Core\Url;
+use Drupal\path_alias\PathAliasInterface;
 use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
 
@@ -34,9 +35,7 @@ final class NavigationToolProvider implements ToolProviderInterface {
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly MenuLinkTreeInterface $menuLinkTree,
-    private readonly AccountProxyInterface $currentUser,
-    private readonly ConfigFactoryInterface $configFactory,
-    private readonly AccessibleEntityPager $pager,
+    private readonly EntityReadTools $reads,
   ) {}
 
   /**
@@ -48,40 +47,33 @@ final class NavigationToolProvider implements ToolProviderInterface {
         name: 'drupal_menu_get',
         title: 'Read menu tree',
         description: 'Returns one menu\'s tree of links as visible to the caller. Inaccessible links are removed by Drupal\'s menu link access evaluation; raw plugin-defined admin links stay hidden unless the caller may see them.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'menu' => ['type' => 'string', 'description' => 'Menu machine name, e.g. "main", "footer", "account".'],
-            'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 9],
-          ],
-          'required' => ['menu'],
-          'additionalProperties' => FALSE,
-        ],
-        handler: fn (array $args): array => $this->menuGet($args['menu'], isset($args['max_depth']) ? (int) $args['max_depth'] : NULL),
-        family: 'menus',
+        inputSchema: ToolSchema::object([
+          'menu' => ['type' => 'string', 'description' => 'Menu machine name, e.g. "main", "footer", "account".'],
+          'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 9],
+        ], ['menu']),
+        handler: fn (array $args, TokenAuthUser $caller): array => $this->menuGet($args['menu'], isset($args['max_depth']) ? (int) $args['max_depth'] : NULL),
+        family: ToolFamily::Menus,
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
-      new ToolDefinition(
+      $this->reads->listTool(
         name: 'drupal_aliases_list',
         title: 'List path aliases',
         description: 'Pages through path aliases whose targets the caller can access. Administrative: requires the "administer url aliases" permission; this fails closed because alias entities have no view access of their own.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'cursor' => ['type' => 'string', 'description' => 'Opaque cursor returned by the previous page.'],
-            'limit' => ['type' => 'integer', 'minimum' => 1],
-            'alias_prefix' => ['type' => 'string'],
+        family: ToolFamily::Aliases,
+        entityTypeId: 'path_alias',
+        contextSeed: 'aliases',
+        filters: [
+          'alias_prefix' => [
+            'schema' => ['type' => 'string'],
+            'field' => 'alias',
+            'operator' => EntityReadTools::OP_STARTS_WITH,
           ],
-          'additionalProperties' => FALSE,
         ],
-        handler: fn (array $args): array => $this->aliasesList(
-          $args['cursor'] ?? NULL,
-          isset($args['limit']) ? (int) $args['limit'] : NULL,
-          $args['alias_prefix'] ?? NULL,
-        ),
-        family: 'aliases',
+        project: fn ($alias, TokenAuthUser $caller): ?array => $this->projectAlias($alias, $caller),
         extraPermissions: ['administer url aliases'],
-        annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
+        // Alias entities carry no view access of their own; the per-row
+        // projector is the authoritative target-access filter.
+        accessCheck: FALSE,
       ),
     ];
   }
@@ -163,52 +155,28 @@ final class NavigationToolProvider implements ToolProviderInterface {
   }
 
   /**
-   * Executes the operation.
+   * Projects one alias whose target the caller may access, else NULL.
    *
-   * @return array<string, mixed>
+   * @return array<string, mixed>|null
    *   The operation result.
    */
-  private function aliasesList(?string $cursor, ?int $limit, ?string $aliasPrefix): array {
-    $pageLimit = Limits::clamp($this->configFactory, $limit);
-    $storage = $this->entityTypeManager->getStorage('path_alias');
-    $account = $this->currentUser->getAccount();
-    $page = $this->pager->page(
-      $storage,
-      $account,
-      $cursor,
-      $pageLimit,
-      json_encode(['aliases', $aliasPrefix], JSON_THROW_ON_ERROR),
-      function (int $offset, int $length) use ($storage, $aliasPrefix): array {
-        $query = $storage->getQuery()
-          ->accessCheck(FALSE)
-          ->sort('id', 'ASC')
-          ->range($offset, $length);
-        if ($aliasPrefix !== NULL) {
-          $query->condition('alias', $aliasPrefix . '%', 'LIKE');
-        }
-        return $query->execute();
-      },
-      function ($alias) use ($account): ?array {
-        /** @var \Drupal\path_alias\PathAliasInterface $alias */
-        $path = '/' . ltrim((string) $alias->getPath(), '/');
-        try {
-          $url = Url::fromUri('internal:' . $path);
-          if (!$url->access($account)) {
-            return NULL;
-          }
-        }
-        catch (\Throwable) {
-          return NULL;
-        }
-        return [
-          'id' => (int) $alias->id(),
-          'alias' => '/' . ltrim((string) $alias->getAlias(), '/'),
-          'path' => $path,
-          'langcode' => $alias->language()->getId(),
-        ];
-      },
-    );
-    return ['limit' => $pageLimit] + $page;
+  private function projectAlias(PathAliasInterface $alias, TokenAuthUser $caller): ?array {
+    $path = '/' . ltrim((string) $alias->getPath(), '/');
+    try {
+      $url = Url::fromUri('internal:' . $path);
+      if (!$url->access($caller)) {
+        return NULL;
+      }
+    }
+    catch (\Throwable) {
+      return NULL;
+    }
+    return [
+      'id' => (int) $alias->id(),
+      'alias' => '/' . ltrim((string) $alias->getAlias(), '/'),
+      'path' => $path,
+      'langcode' => $alias->language()->getId(),
+    ];
   }
 
 }

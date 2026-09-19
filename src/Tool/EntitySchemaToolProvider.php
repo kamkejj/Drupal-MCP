@@ -10,7 +10,9 @@ use Drupal\Core\Entity\EntityTypeBundleInfoInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\drupal_mcp\Entity\EntityProjection;
 use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Mcp\ToolFamily;
 use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
+use Drupal\drupal_mcp\Mcp\ToolSchema;
 use Drupal\user\RoleInterface;
 use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
@@ -53,55 +55,44 @@ final class EntitySchemaToolProvider implements ToolProviderInterface {
    * {@inheritdoc}
    */
   public function tools(): array {
-    $empty = ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => FALSE];
-
     return [
       new ToolDefinition(
         name: 'drupal_entity_types_list',
         title: 'Entity types',
         description: 'Lists the entity types on this site (content and configuration) with structural metadata. Authentication and token-related entity types are excluded.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'group' => [
-              'type' => 'string',
-              'enum' => ['content', 'configuration'],
-              'description' => 'Optional filter by entity group.',
-            ],
+        inputSchema: ToolSchema::object([
+          'group' => [
+            'type' => 'string',
+            'enum' => ['content', 'configuration'],
+            'description' => 'Optional filter by entity group.',
           ],
-          'additionalProperties' => FALSE,
-        ],
+        ]),
         handler: fn (array $args): array => $this->entityTypesList($args['group'] ?? NULL),
-        family: 'entity_schema',
+        family: ToolFamily::EntitySchema,
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
       new ToolDefinition(
         name: 'drupal_schema_get',
         title: 'Entity type schema',
         description: 'Returns the definition and bundles of one supported fieldable entity type. Field-level structure is available through drupal_fields_list for callers with configuration permission. Authentication and token entity types are not supported.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'entity_type' => ['type' => 'string', 'enum' => self::FIELDABLE_TYPES],
-            'bundle' => [
-              'type' => 'string',
-              'description' => 'Optional bundle machine name for bundle-specific fields.',
-            ],
+        inputSchema: ToolSchema::object([
+          'entity_type' => ['type' => 'string', 'enum' => self::FIELDABLE_TYPES],
+          'bundle' => [
+            'type' => 'string',
+            'description' => 'Optional bundle machine name for bundle-specific fields.',
           ],
-          'required' => ['entity_type'],
-          'additionalProperties' => FALSE,
-        ],
+        ], ['entity_type']),
         handler: fn (array $args): array => $this->schemaGet($args['entity_type'], $args['bundle'] ?? NULL),
-        family: 'entity_schema',
+        family: ToolFamily::EntitySchema,
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
       new ToolDefinition(
         name: 'drupal_content_types_list',
         title: 'Content types',
         description: 'Lists node types (content types) with label, description, and preview settings. An empty list is valid: this site may have no content types.',
-        inputSchema: $empty,
+        inputSchema: ToolSchema::object([]),
         handler: fn (): array => $this->contentTypesList(),
-        family: 'entity_schema',
+        family: ToolFamily::EntitySchema,
         extraPermissions: ['administer content types'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
@@ -109,16 +100,11 @@ final class EntitySchemaToolProvider implements ToolProviderInterface {
         name: 'drupal_content_type_get',
         title: 'Content type detail',
         description: 'Returns one content type with its field definitions and which view/form displays customize it. Does not expose display markup or raw configuration.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'type' => ['type' => 'string', 'description' => 'Content type machine name, e.g. "article".'],
-          ],
-          'required' => ['type'],
-          'additionalProperties' => FALSE,
-        ],
+        inputSchema: ToolSchema::object([
+          'type' => ['type' => 'string', 'description' => 'Content type machine name, e.g. "article".'],
+        ], ['type']),
         handler: fn (array $args): array => $this->contentTypeGet($args['type']),
-        family: 'entity_schema',
+        family: ToolFamily::EntitySchema,
         extraPermissions: ['administer content types'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
@@ -126,17 +112,12 @@ final class EntitySchemaToolProvider implements ToolProviderInterface {
         name: 'drupal_fields_list',
         title: 'Field definitions',
         description: 'Lists field definitions (name, type, cardinality, required, target type) for one supported fieldable entity type and optional bundle.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'entity_type' => ['type' => 'string', 'enum' => self::FIELDABLE_TYPES],
-            'bundle' => ['type' => 'string'],
-          ],
-          'required' => ['entity_type'],
-          'additionalProperties' => FALSE,
-        ],
+        inputSchema: ToolSchema::object([
+          'entity_type' => ['type' => 'string', 'enum' => self::FIELDABLE_TYPES],
+          'bundle' => ['type' => 'string'],
+        ], ['entity_type']),
         handler: fn (array $args): array => $this->fieldsList($args['entity_type'], $args['bundle'] ?? NULL),
-        family: 'entity_schema',
+        family: ToolFamily::EntitySchema,
         extraPermissions: ['administer content types'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
@@ -144,9 +125,9 @@ final class EntitySchemaToolProvider implements ToolProviderInterface {
         name: 'drupal_roles_list',
         title: 'Roles',
         description: 'Lists user roles with label, administrative flag, locked flag, and assigned permissions. Inspection only; roles can never be changed through MCP in this release.',
-        inputSchema: $empty,
+        inputSchema: ToolSchema::object([]),
         handler: fn (): array => $this->rolesList(),
-        family: 'entity_schema',
+        family: ToolFamily::EntitySchema,
         extraPermissions: ['administer permissions'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),

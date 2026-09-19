@@ -7,7 +7,6 @@ namespace Drupal\drupal_mcp\Mcp;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\KeyValueStore\KeyValueExpirableFactoryInterface;
-use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Mcp\Server\Session\SessionStoreInterface;
 use Symfony\Component\Uid\Uuid;
@@ -24,22 +23,39 @@ final class SessionStore implements SessionStoreInterface {
 
   private const COLLECTION = 'drupal_mcp_session';
 
+  /**
+   * The caller bound by forAccount(), if any.
+   */
+  private ?TokenAuthUser $caller = NULL;
+
   public function __construct(
     private readonly KeyValueExpirableFactoryInterface $keyValueExpirable,
-    private readonly AccountProxyInterface $currentUser,
     private readonly TimeInterface $time,
     private readonly ConfigFactoryInterface $configFactory,
   ) {}
 
   /**
-   * Executes the operation.
+   * Returns a store whose identity binding is this caller's.
+   *
+   * The shared service never resolves sessions on its own: the ServerFactory
+   * binds the authenticated caller per request so the user/consumer check
+   * below is explicit, not ambient.
+   */
+  public function forAccount(TokenAuthUser $caller): self {
+    $bound = clone $this;
+    $bound->caller = $caller;
+    return $bound;
+  }
+
+  /**
+   * {@inheritdoc}
    */
   public function exists(Uuid $id): bool {
     return $this->read($id) !== FALSE;
   }
 
   /**
-   * Executes the operation.
+   * {@inheritdoc}
    */
   public function read(Uuid $id): string|false {
     $entry = $this->keyValueExpirable->get(self::COLLECTION)->get($id->toRfc4122());
@@ -56,7 +72,7 @@ final class SessionStore implements SessionStoreInterface {
   }
 
   /**
-   * Executes the operation.
+   * {@inheritdoc}
    */
   public function write(Uuid $id, string $data): bool {
     [$uid, $consumer] = $this->callerIdentity();
@@ -70,7 +86,7 @@ final class SessionStore implements SessionStoreInterface {
   }
 
   /**
-   * Executes the operation.
+   * {@inheritdoc}
    */
   public function destroy(Uuid $id): bool {
     if ($this->read($id) === FALSE) {
@@ -81,7 +97,7 @@ final class SessionStore implements SessionStoreInterface {
   }
 
   /**
-   * Executes the operation.
+   * {@inheritdoc}
    */
   public function gc(): array {
     // Expiry is enforced by the expirable store itself and physical cleanup
@@ -97,11 +113,10 @@ final class SessionStore implements SessionStoreInterface {
    *   The operation result.
    */
   private function callerIdentity(): array {
-    $account = $this->currentUser->getAccount();
-    if ($account instanceof TokenAuthUser) {
-      return [(string) $account->id(), (string) $account->getConsumer()->uuid()];
+    if ($this->caller !== NULL) {
+      return [(string) $this->caller->id(), (string) $this->caller->getConsumer()->uuid()];
     }
-    return [(string) ($account ? $account->id() : 0), ''];
+    return ['0', ''];
   }
 
 }

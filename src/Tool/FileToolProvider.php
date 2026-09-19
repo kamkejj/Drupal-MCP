@@ -6,12 +6,11 @@ namespace Drupal\drupal_mcp\Tool;
 
 use Drupal\file\FileInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
-use Drupal\Core\Session\AccountProxyInterface;
-use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Entity\EntityReadTools;
+use Drupal\drupal_mcp\Mcp\ToolFamily;
 use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
+use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Drupal\file\FileUsage\FileUsageInterface;
-use Mcp\Exception\ToolCallException;
-use Mcp\Schema\ToolAnnotations;
 
 /**
  * Existing file metadata inspection.
@@ -24,8 +23,8 @@ final class FileToolProvider implements ToolProviderInterface {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
-    private readonly AccountProxyInterface $currentUser,
     private readonly FileUsageInterface $fileUsage,
+    private readonly EntityReadTools $reads,
   ) {}
 
   /**
@@ -33,40 +32,25 @@ final class FileToolProvider implements ToolProviderInterface {
    */
   public function tools(): array {
     return [
-      new ToolDefinition(
+      $this->reads->getTool(
         name: 'drupal_file_get',
         title: 'Read file metadata',
         description: 'Returns metadata and usage references for one existing file the caller may view: filename, MIME type, size, timestamps, and where it is referenced. Does not grant or expose download URLs.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) ['id' => ['type' => 'integer', 'minimum' => 1]],
-          'required' => ['id'],
-          'additionalProperties' => FALSE,
-        ],
-        handler: fn (array $args): array => $this->fileGet((int) $args['id']),
-        family: 'files',
-        annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
+        family: ToolFamily::Files,
+        entityTypeId: 'file',
+        label: 'File',
+        project: fn ($file, TokenAuthUser $caller): array => $this->projectFile($file, $caller),
       ),
     ];
   }
 
   /**
-   * Executes the operation.
+   * Projects one file's metadata and viewable usage references.
    *
    * @return array<string, mixed>
    *   The operation result.
    */
-  private function fileGet(int $id): array {
-    $file = $this->entityTypeManager->getStorage('file')->load($id);
-    if ($file === NULL) {
-      throw new ToolCallException(sprintf('File %d does not exist.', $id));
-    }
-    $account = $this->currentUser->getAccount();
-    if (!$file->access('view', $account)) {
-      throw new ToolCallException(sprintf('File %d is not accessible.', $id));
-    }
-    \assert($file instanceof FileInterface);
-
+  private function projectFile(FileInterface $file, TokenAuthUser $caller): array {
     $usage = [];
     foreach ($this->fileUsage->listUsage($file) as $module => $targets) {
       foreach ($targets as $type => $entries) {
@@ -76,7 +60,7 @@ final class FileToolProvider implements ToolProviderInterface {
         $storage = $this->entityTypeManager->getStorage($type);
         foreach ($entries as $targetId => $count) {
           $target = $storage->load($targetId);
-          if ($target === NULL || !$target->access('view', $account)) {
+          if ($target === NULL || !$target->access('view', $caller)) {
             continue;
           }
           $usage[] = ['module' => $module, 'entity_type' => $type, 'id' => (string) $targetId, 'count' => (int) $count];

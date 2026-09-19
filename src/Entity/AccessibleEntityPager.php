@@ -7,8 +7,7 @@ namespace Drupal\drupal_mcp\Entity;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityStorageInterface;
 use Drupal\Core\Session\AccountInterface;
-use Drupal\Core\Site\Settings;
-use Mcp\Exception\ToolCallException;
+use Drupal\drupal_mcp\Mcp\SignedCursor;
 
 /**
  * Builds stable bounded pages after per-entity access filtering.
@@ -20,10 +19,9 @@ use Mcp\Exception\ToolCallException;
  */
 final class AccessibleEntityPager {
 
-  /**
-   * Maximum offset a cursor may carry, bounding deep OFFSET scans.
-   */
-  private const MAX_OFFSET = 100000;
+  public function __construct(
+    private readonly SignedCursor $cursor,
+  ) {}
 
   /**
    * Builds one access-filtered page.
@@ -47,7 +45,7 @@ final class AccessibleEntityPager {
    *   One bounded page and its continuation cursor.
    */
   public function page(EntityStorageInterface $storage, AccountInterface $account, ?string $cursor, int $limit, string $context, callable $query, callable $project): array {
-    $offset = $this->decodeCursor($cursor, $context);
+    $offset = $this->cursor->decode($cursor, $context);
     $items = [];
     $scanned = 0;
     $maxScan = max(100, $limit * 10);
@@ -90,53 +88,8 @@ final class AccessibleEntityPager {
     return [
       'count' => \count($items),
       'items' => $items,
-      'next_cursor' => $exhausted ? NULL : $this->encodeCursor($offset, $context),
+      'next_cursor' => $exhausted ? NULL : $this->cursor->encode($offset, $context),
     ];
-  }
-
-  /**
-   * Decodes a server-signed continuation cursor.
-   *
-   * The payload is HMAC-signed with the site hash salt so clients cannot
-   * forge offsets, and the offset is capped so even a legitimately paginating
-   * client cannot drive arbitrarily deep OFFSET scans.
-   */
-  private function decodeCursor(?string $cursor, string $context): int {
-    if ($cursor === NULL || $cursor === '') {
-      return 0;
-    }
-    $decoded = base64_decode(strtr($cursor, '-_', '+/'), TRUE);
-    $data = $decoded === FALSE ? NULL : json_decode($decoded, TRUE);
-    if (!\is_array($data)
-      || !isset($data['offset'], $data['context'], $data['signature'])
-      || !\is_int($data['offset'])
-      || $data['offset'] < 0
-      || $data['offset'] > self::MAX_OFFSET
-      || !hash_equals($this->signature($data['offset'], (string) $data['context']), (string) $data['signature'])
-      || !hash_equals(hash('sha256', $context), (string) $data['context'])) {
-      throw new ToolCallException('The pagination cursor is invalid for this request.');
-    }
-    return $data['offset'];
-  }
-
-  /**
-   * Encodes a server-signed continuation cursor.
-   */
-  private function encodeCursor(int $offset, string $context): string {
-    $contextHash = hash('sha256', $context);
-    $encoded = json_encode([
-      'offset' => $offset,
-      'context' => $contextHash,
-      'signature' => $this->signature($offset, $contextHash),
-    ], JSON_THROW_ON_ERROR);
-    return rtrim(strtr(base64_encode($encoded), '+/', '-_'), '=');
-  }
-
-  /**
-   * HMAC binding one offset to one query context.
-   */
-  private function signature(int $offset, string $contextHash): string {
-    return hash_hmac('sha256', $offset . ':' . $contextHash, Settings::getHashSalt());
   }
 
 }

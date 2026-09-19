@@ -6,9 +6,8 @@ namespace Drupal\drupal_mcp\Diagnostics;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Lock\LockBackendInterface;
-use Drupal\Core\Session\AccountProxyInterface;
-use Drupal\Core\Site\Settings;
 use Drupal\drupal_mcp\Mcp\Limits;
+use Drupal\drupal_mcp\Mcp\SignedCursor;
 use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Mcp\Exception\ToolCallException;
 use Psr\Log\LoggerInterface;
@@ -22,11 +21,6 @@ final class DatabaseInspector {
 
   private const MAX_RESULT_BYTES = 262144;
 
-  /**
-   * Maximum offset a cursor may carry, bounding deep OFFSET scans.
-   */
-  private const MAX_OFFSET = 100000;
-
   private const LOCK_NAME = 'drupal_mcp.diagnostics.database';
 
   private const LOCK_TTL_SECONDS = 15.0;
@@ -34,24 +28,28 @@ final class DatabaseInspector {
   public function __construct(
     private readonly ReadOnlyDatabaseConnection $connection,
     private readonly ConfigFactoryInterface $configFactory,
-    private readonly AccountProxyInterface $currentUser,
+    private readonly Limits $limits,
     private readonly RequestStack $requestStack,
     private readonly LoggerInterface $logger,
     private readonly LockBackendInterface $lock,
+    private readonly SignedCursor $cursor,
   ) {}
 
   /**
    * Executes the operation.
    *
+   * @param \Drupal\simple_oauth\Authentication\TokenAuthUser $caller
+   *   The account invoking the inspection.
+   *
    * @return array<string, mixed>
    *   The operation result.
    */
-  public function tables(): array {
+  public function tables(TokenAuthUser $caller): array {
     $started = microtime(TRUE);
-    $audit = $this->auditContext('drupal_database_tables');
+    $audit = $this->auditContext($caller, 'drupal_database_tables');
     try {
       $surfaces = [];
-      foreach ($this->enabledSurfaces() as $surface) {
+      foreach ($this->enabledSurfaces($caller) as $surface) {
         $surfaces[] = [
           'name' => $surface->view,
           'label' => $surface->label,
@@ -70,14 +68,19 @@ final class DatabaseInspector {
   /**
    * Executes the operation.
    *
+   * @param \Drupal\simple_oauth\Authentication\TokenAuthUser $caller
+   *   The account invoking the inspection.
+   * @param string $name
+   *   Approved database surface name.
+   *
    * @return array<string, mixed>
    *   The operation result.
    */
-  public function describe(string $name): array {
+  public function describe(TokenAuthUser $caller, string $name): array {
     $started = microtime(TRUE);
-    $audit = $this->auditContext('drupal_database_describe', $name);
+    $audit = $this->auditContext($caller, 'drupal_database_describe', $name);
     try {
-      $surface = $this->surface($name);
+      $surface = $this->surface($caller, $name);
       $result = [
         'name' => $surface->view,
         'label' => $surface->label,
@@ -100,6 +103,8 @@ final class DatabaseInspector {
   /**
    * Executes one bounded, structured read.
    *
+   * @param \Drupal\simple_oauth\Authentication\TokenAuthUser $caller
+   *   The account invoking the inspection.
    * @param string $name
    *   Approved database surface name.
    * @param list<string> $columns
@@ -116,9 +121,9 @@ final class DatabaseInspector {
    * @return array<string, mixed>
    *   Rows, selected columns, count, and continuation cursor.
    */
-  public function query(string $name, array $columns, array $filters, ?array $sort, ?int $requestedLimit, ?string $cursor): array {
+  public function query(TokenAuthUser $caller, string $name, array $columns, array $filters, ?array $sort, ?int $requestedLimit, ?string $cursor): array {
     $started = microtime(TRUE);
-    $audit = $this->auditContext('drupal_database_query', $name);
+    $audit = $this->auditContext($caller, 'drupal_database_query', $name);
     try {
       $acquired = $this->lock->acquire(self::LOCK_NAME, self::LOCK_TTL_SECONDS);
     }
@@ -133,7 +138,7 @@ final class DatabaseInspector {
 
     $failureCategory = 'validation_failure';
     try {
-      $surface = $this->surface($name);
+      $surface = $this->surface($caller, $name);
       $columns = $columns === [] ? array_keys($surface->columns) : array_values(array_unique($columns));
       foreach ($columns as $column) {
         $this->assertColumn($surface, $column);
@@ -167,9 +172,9 @@ final class DatabaseInspector {
         throw new ToolCallException('Database sort direction must be ASC or DESC.');
       }
 
-      $limit = Limits::clamp($this->configFactory, $requestedLimit);
+      $limit = $this->limits->clamp($requestedLimit);
       $context = json_encode([$name, $columns, $filters, $sort], JSON_THROW_ON_ERROR);
-      $offset = $this->decodeCursor($cursor, $context);
+      $offset = $this->cursor->decode($cursor, $context);
       $sql = sprintf(
         'SELECT %s FROM %s%s ORDER BY %s %s LIMIT %d OFFSET %d',
         implode(', ', array_map($this->quoteIdentifier(...), $columns)),
@@ -204,7 +209,7 @@ final class DatabaseInspector {
         'columns' => $columns,
         'count' => \count($rows),
         'rows' => $rows,
-        'next_cursor' => $hasMore ? $this->encodeCursor($offset + $limit, $context) : NULL,
+        'next_cursor' => $hasMore ? $this->cursor->encode($offset + $limit, $context) : NULL,
       ];
     }
     catch (ToolCallException $exception) {
@@ -232,21 +237,20 @@ final class DatabaseInspector {
    * @return array<string, \Drupal\drupal_mcp\Diagnostics\DatabaseSurface>
    *   The operation result.
    */
-  private function enabledSurfaces(): array {
+  private function enabledSurfaces(TokenAuthUser $caller): array {
     $approved = array_values((array) ($this->configFactory->get('drupal_mcp.settings')->get('database_surfaces') ?? []));
     $configured = array_intersect_key(ApprovedDatabaseSurfaces::all(), array_flip($approved));
-    $account = $this->currentUser->getAccount();
     return array_filter(
       $configured,
-      fn (DatabaseSurface $surface): bool => $surface->allows($account),
+      fn (DatabaseSurface $surface): bool => $surface->allows($caller),
     );
   }
 
   /**
    * Executes the operation.
    */
-  private function surface(string $name): DatabaseSurface {
-    $surfaces = $this->enabledSurfaces();
+  private function surface(TokenAuthUser $caller, string $name): DatabaseSurface {
+    $surfaces = $this->enabledSurfaces($caller);
     if (!isset($surfaces[$name])) {
       throw new ToolCallException(sprintf('Database surface "%s" is not approved.', $name));
     }
@@ -281,61 +285,15 @@ final class DatabaseInspector {
   }
 
   /**
-   * Decodes a server-signed continuation cursor.
-   *
-   * The payload is HMAC-signed with the site hash salt so clients cannot
-   * forge offsets, and the offset is capped so even a legitimately paginating
-   * client cannot drive arbitrarily deep OFFSET scans.
-   */
-  private function decodeCursor(?string $cursor, string $context): int {
-    if ($cursor === NULL || $cursor === '') {
-      return 0;
-    }
-    $decoded = base64_decode(strtr($cursor, '-_', '+/'), TRUE);
-    $data = $decoded === FALSE ? NULL : json_decode($decoded, TRUE);
-    if (!\is_array($data)
-      || !isset($data['offset'], $data['context'], $data['signature'])
-      || !\is_int($data['offset'])
-      || $data['offset'] < 0
-      || $data['offset'] > self::MAX_OFFSET
-      || !hash_equals($this->signature($data['offset'], (string) $data['context']), (string) $data['signature'])
-      || !hash_equals(hash('sha256', $context), (string) $data['context'])) {
-      throw new ToolCallException('The database pagination cursor is invalid for this request.');
-    }
-    return $data['offset'];
-  }
-
-  /**
-   * Encodes a server-signed continuation cursor.
-   */
-  private function encodeCursor(int $offset, string $context): string {
-    $contextHash = hash('sha256', $context);
-    $encoded = json_encode([
-      'offset' => $offset,
-      'context' => $contextHash,
-      'signature' => $this->signature($offset, $contextHash),
-    ], JSON_THROW_ON_ERROR);
-    return rtrim(strtr(base64_encode($encoded), '+/', '-_'), '=');
-  }
-
-  /**
-   * HMAC binding one offset to one query context.
-   */
-  private function signature(int $offset, string $contextHash): string {
-    return hash_hmac('sha256', $offset . ':' . $contextHash, Settings::getHashSalt());
-  }
-
-  /**
    * Executes the operation.
    *
    * @return array<string, int|string|null>
    *   The operation result.
    */
-  private function auditContext(string $operationId, ?string $surface = NULL): array {
-    $account = $this->currentUser->getAccount();
+  private function auditContext(TokenAuthUser $caller, string $operationId, ?string $surface = NULL): array {
     return [
-      'uid' => (int) $account->id(),
-      'consumer' => $account instanceof TokenAuthUser ? $account->getConsumer()->getClientId() : NULL,
+      'uid' => (int) $caller->id(),
+      'consumer' => $caller->getConsumer()->getClientId(),
       'operation_id' => $operationId,
       'surface' => $surface,
       'request_id' => $this->requestStack->getCurrentRequest()?->headers->get('X-Request-ID') ?: Uuid::v4()->toRfc4122(),

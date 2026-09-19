@@ -9,6 +9,7 @@ use Drupal\Core\Session\AccountInterface;
 use Drupal\drupal_mcp\Access\McpAccessPolicy;
 use Drupal\drupal_mcp\Mcp\OperationCapability;
 use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Mcp\ToolFamily;
 use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
 use Drupal\drupal_mcp\Mcp\ToolRegistry;
 use Drupal\KernelTests\KernelTestBase;
@@ -194,8 +195,8 @@ final class OauthPermissionIsolationKernelTest extends KernelTestBase {
        */
       public function tools(): array {
         return [
-          new ToolDefinition('read_tool', 'Read', 'Reads.', [], fn (): array => [], 'site'),
-          new ToolDefinition('write_tool', 'Write', 'Writes.', [], fn (): array => [], 'site', capability: OperationCapability::Write),
+          new ToolDefinition('read_tool', 'Read', 'Reads.', [], fn (array $arguments, TokenAuthUser $caller): array => [], ToolFamily::Site),
+          new ToolDefinition('write_tool', 'Write', 'Writes.', [], fn (array $arguments, TokenAuthUser $caller): array => [], ToolFamily::Site, capability: OperationCapability::Write),
         ];
       }
 
@@ -216,8 +217,8 @@ final class OauthPermissionIsolationKernelTest extends KernelTestBase {
     $this->assertSame(['write_tool'], array_keys($registry->toolsForAccount($accounts['write'])));
     $this->assertSame(['read_tool', 'write_tool'], array_keys($registry->toolsForAccount($accounts['both'])));
     $this->assertSame([], $registry->toolsForAccount($accounts['neither']));
-    $this->assertNull($registry->toolForAccount($accounts['read'], 'write_tool'));
-    $this->assertNull($registry->toolForAccount($accounts['write'], 'read_tool'));
+    $this->assertNull($registry->toolsForAccount($accounts['read'])['write_tool'] ?? NULL);
+    $this->assertNull($registry->toolsForAccount($accounts['write'])['read_tool'] ?? NULL);
   }
 
   /**

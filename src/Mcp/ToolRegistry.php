@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Drupal\drupal_mcp\Mcp;
 
-use Mcp\Capability\Registry\ReferenceHandler;
 use Mcp\Exception\ToolCallException;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Session\AccountInterface;
@@ -57,19 +56,15 @@ final class ToolRegistry {
     foreach ($account->getToken()->get('scopes')->getScopes() as $scope) {
       $grantedScopes[] = $scope->getName();
     }
-    $families = $settings->get('families') ?? [];
-    // Mutation families are intentionally separate from read exposure.
-    $families['taxonomy_mutation'] = (bool) $settings->get('mutation_families.taxonomy');
-    $families['node_mutation'] = (bool) $settings->get('mutation_families.node');
 
     $tools = [];
     foreach ($this->providers as $provider) {
       foreach ($provider->tools() as $definition) {
-        if (!($families[$definition->family] ?? FALSE)) {
+        if (!(bool) ($settings->get($definition->family->settingsKey()) ?? FALSE)) {
           continue;
         }
         $capability = $definition->capability;
-        $requiredScope = (string) ($settings->get($capability->scopeConfigKey()) ?: $capability->defaultScope());
+        $requiredScope = $capability->resolveScope($this->configFactory);
         if (!\in_array($requiredScope, $grantedScopes, TRUE)
           || !$account->hasPermission($capability->permission())) {
           continue;
@@ -86,31 +81,21 @@ final class ToolRegistry {
   }
 
   /**
-   * Returns a single visible tool definition by name, or NULL.
-   *
-   * Used by the execution path so that calling a hidden or disabled tool
-   * directly fails closed.
-   */
-  public function toolForAccount(AccountInterface $account, string $name): ?ToolDefinition {
-    return $this->toolsForAccount($account)[$name] ?? NULL;
-  }
-
-  /**
    * Wraps a handler so unexpected failures are audited with their message.
    *
-   * The wrapper is also bound to the SDK ReferenceHandler scope so the SDK
-   * hands it the raw argument bag instead of mapping closure parameters by
-   * name against tool arguments. The wrapper never leaks details to the
-   * client; it only records what the SDK would otherwise swallow.
+   * The wrapper passes the caller through with the argument bag; the
+   * ServerFactory binds the caller into the SDK-facing adapter afterwards.
+   * The wrapper never leaks details to the client; it only records what the
+   * SDK would otherwise swallow.
    */
   private function withErrorAudit(ToolDefinition $definition): ToolDefinition {
     $inner = $definition->handler;
     $logger = $this->logger;
     $name = $definition->name;
 
-    $wrapper = function (array $arguments) use ($inner, $logger, $name): mixed {
+    $wrapper = function (array $arguments, TokenAuthUser $caller) use ($inner, $logger, $name): mixed {
       try {
-        return $inner($arguments);
+        return $inner($arguments, $caller);
       }
       catch (ToolCallException $e) {
         throw $e;
@@ -124,17 +109,7 @@ final class ToolRegistry {
       }
     };
 
-    return new ToolDefinition(
-      $definition->name,
-      $definition->title,
-      $definition->description,
-      $definition->inputSchema,
-      \Closure::bind($wrapper, NULL, ReferenceHandler::class),
-      $definition->family,
-      $definition->extraPermissions,
-      $definition->annotations,
-      $definition->capability,
-    );
+    return $definition->withHandler($wrapper);
   }
 
 }

@@ -18,7 +18,7 @@ if [[ -z "${MCP_PASSWORD:-}" ]]; then
     echo "Set MCP_PASSWORD or provide a readable MCP_CREDENTIALS_FILE." >&2
     exit 2
   fi
-  MCP_PASSWORD="$(awk -v username="$USERNAME" '$1 == username ":" { password = $2 } END { print password }' "$CREDENTIALS_FILE")"
+  MCP_PASSWORD=$(awk -v username="$USERNAME" '$1 == username ":" { value = $2 } END { print value }' "$CREDENTIALS_FILE")
 fi
 
 if [[ -z "$MCP_PASSWORD" ]]; then

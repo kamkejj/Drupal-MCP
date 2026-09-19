@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\drupal_mcp\Kernel;
 
-use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\filter\Entity\FilterFormat;
 use Drupal\KernelTests\KernelTestBase;
 use Drupal\taxonomy\Entity\Term;
@@ -13,6 +12,7 @@ use Drupal\taxonomy\TermInterface;
 use Drupal\user\Entity\Role;
 use Drupal\user\Entity\User;
 use Drupal\user\UserInterface;
+use Drupal\Tests\drupal_mcp\Traits\TokenCallerTrait;
 use Drupal\drupal_mcp\Mutation\TaxonomyMutationException;
 use Drupal\drupal_mcp\Mutation\TaxonomyTermMutator;
 use PHPUnit\Framework\Attributes\Group;
@@ -25,6 +25,8 @@ use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 #[RunTestsInSeparateProcesses]
 final class TaxonomyMutationKernelTest extends KernelTestBase {
 
+  use TokenCallerTrait;
+
   /**
    * {@inheritdoc}
    */
@@ -35,6 +37,8 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     'text',
     'filter',
     'file',
+    'image',
+    'options',
     'taxonomy',
     'serialization',
     'consumers',
@@ -50,10 +54,6 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
   private TaxonomyTermMutator $mutator;
 
   /**
-   * The switchable current account. */
-  private AccountProxyInterface $currentUser;
-
-  /**
    * The authorized taxonomy writer. */
   private UserInterface $writer;
 
@@ -64,7 +64,9 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     parent::setUp();
     $this->installEntitySchema('user');
     $this->installEntitySchema('taxonomy_term');
-    $this->installConfig(['system', 'filter', 'taxonomy', 'drupal_mcp']);
+    $this->installEntitySchema('consumer');
+    $this->installEntitySchema('oauth2_token');
+    $this->installConfig(['system', 'user', 'filter', 'taxonomy', 'drupal_mcp']);
 
     Vocabulary::create(['vid' => 'tags', 'name' => 'Tags'])->save();
     Vocabulary::create(['vid' => 'article', 'name' => 'Article'])->save();
@@ -86,8 +88,6 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     ])->save();
     $this->createUser('root-placeholder', []);
     $this->writer = $this->createUser('writer', ['mcp_writer']);
-    $this->currentUser = $this->container->get('current_user');
-    $this->currentUser->setAccount($this->writer);
     $this->container->get('config.factory')->getEditable('drupal_mcp.settings')
       ->set('mutation_families.taxonomy', TRUE)
       ->set('writable_vocabularies', ['tags', 'article'])
@@ -100,7 +100,7 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
    */
   public function testCreateAndConfigurationGates(): void {
     $parent = $this->term('Parent');
-    $created = $this->mutator->create([
+    $created = $this->mutator->create($this->caller(), [
       'vocabulary' => 'tags',
       'name' => ' Child ',
       'description' => ['value' => '<em>safe</em>', 'format' => 'mcp_text'],
@@ -112,7 +112,7 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     $this->assertSame([(int) $parent->id()], $created['fields']['parents']);
     $this->assertSame(4, $created['fields']['weight']);
 
-    $article = $this->mutator->create([
+    $article = $this->mutator->create($this->caller(), [
       'vocabulary' => 'article',
       'name' => 'PHP',
     ]);
@@ -131,21 +131,19 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
    */
   public function testNativeAndFieldAccessDenials(): void {
     $unprivileged = $this->createUser('unprivileged', []);
-    $this->currentUser->setAccount($unprivileged);
-    $this->assertCreateFailure('entity_access_denied', ['vocabulary' => 'tags', 'name' => 'Denied']);
+    $this->assertCreateFailure('entity_access_denied', ['vocabulary' => 'tags', 'name' => 'Denied'], $unprivileged);
 
     $term = $this->term('Existing');
-    $this->assertFailure('entity_access_denied', fn () => $this->mutator->update([
+    $this->assertFailure('entity_access_denied', fn () => $this->mutator->update($this->caller($unprivileged), [
       'id' => (int) $term->id(),
       'expected_revision_id' => (int) $term->id(),
       'changes' => ['name' => 'Denied update'],
     ]));
 
-    $this->currentUser->setAccount($this->writer);
     $this->container->get('state')->set('drupal_mcp_test.denied_fields', ['name']);
     $this->container->get('state')->set('drupal_mcp_test.denied_field_operations', ['edit']);
     $this->resetAccessCaches();
-    $this->assertFailure('field_not_writable', fn () => $this->mutator->update([
+    $this->assertFailure('field_not_writable', fn () => $this->mutator->update($this->caller(), [
       'id' => (int) $term->id(),
       'expected_revision_id' => (int) $term->id(),
       'changes' => ['name' => 'Blocked field'],
@@ -161,12 +159,12 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     $this->assertCreateFailure('invalid_value', ['vocabulary' => 'tags', 'name' => ' ']);
     $this->assertCreateFailure('invalid_value', ['vocabulary' => 'tags', 'name' => 'Heavy', 'weight' => 1001]);
     $this->assertCreateFailure('field_not_writable', ['vocabulary' => 'tags', 'name' => 'Extra', 'status' => 1]);
-    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create($this->caller(), [
       'vocabulary' => 'tags',
       'name' => 'Bad format',
       'description' => ['value' => 'x', 'format' => 'missing'],
     ]));
-    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_text_format', fn () => $this->mutator->create($this->caller(), [
       'vocabulary' => 'tags',
       'name' => 'Malformed format',
       'description' => ['value' => 'x'],
@@ -196,12 +194,12 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     ]);
 
     $child = $this->term('Child', 'tags', [(int) $parent->id()]);
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->update([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->update($this->caller(), [
       'id' => (int) $parent->id(),
       'expected_revision_id' => (int) $parent->id(),
       'changes' => ['parents' => [(int) $child->id()]],
     ]));
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->update([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->update($this->caller(), [
       'id' => (int) $parent->id(),
       'expected_revision_id' => (int) $parent->id(),
       'changes' => ['parents' => [(int) $parent->id()]],
@@ -210,7 +208,7 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     $this->container->get('state')->set('drupal_mcp_test.denied_entities', ['taxonomy_term:' . $child->id()]);
     $this->container->get('state')->set('drupal_mcp_test.denied_entity_operations', ['view']);
     $this->resetAccessCaches();
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->create([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->create($this->caller(), [
       'vocabulary' => 'tags',
       'name' => 'Hidden parent',
       'parents' => [(int) $child->id()],
@@ -240,7 +238,7 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
       'changes' => ['name' => 'Original'],
     ]);
 
-    $this->assertFailure('invalid_reference', fn () => $this->mutator->update([
+    $this->assertFailure('invalid_reference', fn () => $this->mutator->update($this->caller(), [
       'id' => $id,
       'expected_revision_id' => $id,
       'changes' => ['name' => 'Must not leak', 'parents' => [999999]],
@@ -249,7 +247,7 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     $this->assertInstanceOf(TermInterface::class, $reloaded);
     $this->assertSame('Original', $reloaded->label());
 
-    $updated = $this->mutator->update([
+    $updated = $this->mutator->update($this->caller(), [
       'id' => $id,
       'expected_revision_id' => $id,
       'changes' => ['name' => 'Updated'],
@@ -267,6 +265,12 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
     ]);
     $term->save();
     return $term;
+  }
+
+  /**
+   * Returns the explicit mutation caller, defaulting to the writer. */
+  private function caller(?UserInterface $as = NULL) {
+    return $this->tokenCaller($as ?? $this->writer);
   }
 
   /**
@@ -291,14 +295,14 @@ final class TaxonomyMutationKernelTest extends KernelTestBase {
 
   /**
    * Asserts a categorized create failure. */
-  private function assertCreateFailure(string $category, array $command): void {
-    $this->assertFailure($category, fn () => $this->mutator->create($command));
+  private function assertCreateFailure(string $category, array $command, ?UserInterface $as = NULL): void {
+    $this->assertFailure($category, fn () => $this->mutator->create($this->caller($as), $command));
   }
 
   /**
    * Asserts a categorized update failure. */
-  private function assertUpdateFailure(string $category, array $command): void {
-    $this->assertFailure($category, fn () => $this->mutator->update($command));
+  private function assertUpdateFailure(string $category, array $command, ?UserInterface $as = NULL): void {
+    $this->assertFailure($category, fn () => $this->mutator->update($this->caller($as), $command));
   }
 
   /**

@@ -48,16 +48,17 @@ final class McpAccessPolicy {
 
     if (!$this->canAccessCapability($account, OperationCapability::Read)
       && !$this->canAccessCapability($account, OperationCapability::Write)) {
-      $settings = $this->configFactory->get('drupal_mcp.settings');
-      $readScope = (string) ($settings->get('read_scope') ?: 'mcp:read');
-      $writeScope = (string) ($settings->get('write_scope') ?: 'mcp:write');
       $this->logger->info('MCP request denied: no valid MCP capability scope and permission pair.', [
         'uid' => $account->id(),
         'consumer' => $account->getConsumer()->getClientId(),
       ]);
       return $this->forbidden(
         'The access token and authenticated user do not grant an MCP operation capability.',
-        sprintf('Bearer error="insufficient_scope", scope="%s %s"', $readScope, $writeScope),
+        sprintf(
+          'Bearer error="insufficient_scope", scope="%s %s"',
+          OperationCapability::Read->resolveScope($this->configFactory),
+          OperationCapability::Write->resolveScope($this->configFactory),
+        ),
       );
     }
 
@@ -94,8 +95,7 @@ final class McpAccessPolicy {
     if (!$account instanceof TokenAuthUser) {
       return FALSE;
     }
-    $settings = $this->configFactory->get('drupal_mcp.settings');
-    $requiredScope = (string) ($settings->get($capability->scopeConfigKey()) ?: $capability->defaultScope());
+    $requiredScope = $capability->resolveScope($this->configFactory);
     return \in_array($requiredScope, $this->grantedScopes($account), TRUE)
       && $account->hasPermission($capability->permission());
   }

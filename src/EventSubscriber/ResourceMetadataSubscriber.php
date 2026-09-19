@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\drupal_mcp\EventSubscriber;
 
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\drupal_mcp\Mcp\OperationCapability;
 use Drupal\simple_oauth_server_metadata\Event\ResourceMetadataEvent;
 use Drupal\simple_oauth_server_metadata\Event\ResourceMetadataEvents;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -42,10 +43,10 @@ final class ResourceMetadataSubscriber implements EventSubscriberInterface {
     $metadata['resource'] = (string) $this->configFactory->get('drupal_mcp.settings')->get('resource_uri');
     $metadata['bearer_methods_supported'] = ['header'];
 
-    $settings = $this->configFactory->get('drupal_mcp.settings');
-    $readScope = (string) ($settings->get('read_scope') ?: 'mcp:read');
-    $writeScope = (string) ($settings->get('write_scope') ?: 'mcp:write');
-    $metadata['scopes_supported'] = array_values(array_unique([$readScope, $writeScope]));
+    $metadata['scopes_supported'] = array_values(array_unique([
+      OperationCapability::Read->resolveScope($this->configFactory),
+      OperationCapability::Write->resolveScope($this->configFactory),
+    ]));
   }
 
 }

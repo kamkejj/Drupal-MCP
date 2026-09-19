@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Drupal\Tests\drupal_mcp\Kernel;
 
 use Drupal\Core\Field\FieldStorageDefinitionInterface;
-use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\field\Entity\FieldStorageConfig;
 use Drupal\KernelTests\KernelTestBase;
 use Drupal\node\Entity\Node;
 use Drupal\node\Entity\NodeType;
 use Drupal\node\NodeInterface;
+use Drupal\Tests\drupal_mcp\Traits\TokenCallerTrait;
 use Drupal\user\Entity\Role;
 use Drupal\user\Entity\User;
 use Drupal\user\UserInterface;
@@ -25,6 +25,8 @@ use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 #[Group('drupal_mcp')]
 #[RunTestsInSeparateProcesses]
 final class EntityToolAccessKernelTest extends KernelTestBase {
+
+  use TokenCallerTrait;
 
   /**
    * {@inheritdoc}
@@ -48,11 +50,6 @@ final class EntityToolAccessKernelTest extends KernelTestBase {
     'drupal_mcp',
     'drupal_mcp_test',
   ];
-
-  /**
-   * The active account proxy, used to switch the simulated caller.
-   */
-  private AccountProxyInterface $currentUser;
 
   /**
    * A user holding only the MCP read permission.
@@ -82,8 +79,10 @@ final class EntityToolAccessKernelTest extends KernelTestBase {
 
     $this->installEntitySchema('user');
     $this->installEntitySchema('node');
+    $this->installEntitySchema('consumer');
+    $this->installEntitySchema('oauth2_token');
     $this->installSchema('node', ['node_access']);
-    $this->installConfig(['system', 'filter', 'node', 'drupal_mcp']);
+    $this->installConfig(['system', 'user', 'filter', 'node', 'drupal_mcp']);
 
     NodeType::create([
       'type' => 'mcp_test',
@@ -154,9 +153,6 @@ final class EntityToolAccessKernelTest extends KernelTestBase {
     $this->container->get('config.factory')->getEditable('drupal_mcp.settings')
       ->set('node_bundles', ['mcp_test'])
       ->save();
-
-    $this->currentUser = $this->container->get('current_user');
-    $this->currentUser->setAccount($this->reader);
   }
 
   /**
@@ -248,10 +244,9 @@ final class EntityToolAccessKernelTest extends KernelTestBase {
     $this->assertArrayNotHasKey('status', $readerView);
     $this->assertArrayNotHasKey('mail', $readerView);
 
-    $this->currentUser->setAccount($this->administrator);
     $administratorView = $this->callTool('Drupal\\drupal_mcp\\Tool\\UserToolProvider', 'drupal_user_get', [
       'id' => (int) $this->reader->id(),
-    ]);
+    ], $this->administrator);
     $this->assertSame(['authenticated', 'mcp_reader'], $administratorView['roles']);
     $this->assertSame(1, $administratorView['status']);
     $this->assertArrayNotHasKey('mail', $administratorView);
@@ -294,11 +289,11 @@ final class EntityToolAccessKernelTest extends KernelTestBase {
   /**
    * Calls a named tool through its real provider service.
    */
-  private function callTool(string $providerClass, string $toolName, array $arguments): array {
+  private function callTool(string $providerClass, string $toolName, array $arguments, ?UserInterface $as = NULL): array {
     $provider = $this->container->get($providerClass);
     foreach ($provider->tools() as $tool) {
       if ($tool->name === $toolName) {
-        return ($tool->handler)($arguments);
+        return ($tool->handler)($arguments, $this->tokenCaller($as ?? $this->reader));
       }
     }
     $this->fail(sprintf('Tool %s was not registered by %s.', $toolName, $providerClass));

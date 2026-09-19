@@ -4,16 +4,11 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\drupal_mcp\Unit;
 
-use Drupal\Component\Datetime\TimeInterface;
-use Drupal\Core\KeyValueStore\KeyValueExpirableFactoryInterface;
-use Drupal\Core\KeyValueStore\KeyValueStoreExpirableInterface;
-use Drupal\Core\Lock\LockBackendInterface;
-use Drupal\Core\PrivateKey;
 use Drupal\drupal_mcp\Idempotency\IdempotencyConflictException;
 use Drupal\drupal_mcp\Idempotency\IdempotencyInProgressException;
 use Drupal\drupal_mcp\Idempotency\IdempotencyManager;
 use Drupal\drupal_mcp\Idempotency\IdempotencyResultTooLargeException;
-use Drupal\Tests\drupal_mcp\Unit\Fixtures\ConfigFactoryStub;
+use Drupal\Tests\drupal_mcp\Unit\Fixtures\StubIdempotencyManager;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -157,38 +152,7 @@ final class IdempotencyManagerTest extends TestCase {
    *   Current time, passed by reference.
    */
   private function manager(?array &$entries, ?int &$now): IdempotencyManager {
-    $entries = [];
-    $now = 1000;
-    $store = $this->createMock(KeyValueStoreExpirableInterface::class);
-    $store->method('get')->willReturnCallback(function (string $key) use (&$entries, &$now): mixed {
-      if (isset($entries[$key]) && $entries[$key]['expire'] <= $now) {
-        unset($entries[$key]);
-      }
-      return $entries[$key]['value'] ?? NULL;
-    });
-    $store->method('setWithExpire')->willReturnCallback(function (string $key, mixed $value, int $expire) use (&$entries, &$now): void {
-      $entries[$key] = ['value' => $value, 'expire' => $now + $expire];
-    });
-    $store->method('delete')->willReturnCallback(function (string $key) use (&$entries): void {
-      unset($entries[$key]);
-    });
-    $factory = $this->createMock(KeyValueExpirableFactoryInterface::class);
-    $factory->method('get')->with('drupal_mcp_idempotency')->willReturn($store);
-    $lock = $this->createMock(LockBackendInterface::class);
-    $lock->method('acquire')->willReturn(TRUE);
-    $time = $this->createMock(TimeInterface::class);
-    $time->method('getCurrentTime')->willReturnCallback(fn (): int => $now);
-
-    $privateKey = $this->createMock(PrivateKey::class);
-    $privateKey->method('get')->willReturn('test-private-key');
-
-    return new IdempotencyManager(
-      $factory,
-      $lock,
-      $time,
-      new ConfigFactoryStub(['drupal_mcp.settings' => ['idempotency_ttl' => 300]]),
-      $privateKey,
-    );
+    return StubIdempotencyManager::create($entries, $now);
   }
 
 }

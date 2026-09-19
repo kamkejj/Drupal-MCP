@@ -7,12 +7,13 @@ namespace Drupal\drupal_mcp\Tool;
 use Drupal\taxonomy\VocabularyInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
-use Drupal\Core\Session\AccountProxyInterface;
-use Drupal\drupal_mcp\Entity\AccessibleEntityPager;
-use Drupal\drupal_mcp\Entity\EntityProjection;
-use Drupal\drupal_mcp\Mcp\Limits;
+use Drupal\drupal_mcp\Entity\EntityReadTools;
 use Drupal\drupal_mcp\Mcp\ToolDefinition;
+use Drupal\drupal_mcp\Mcp\ToolFamily;
 use Drupal\drupal_mcp\Mcp\ToolProviderInterface;
+use Drupal\drupal_mcp\Mcp\ToolSchema;
+use Drupal\simple_oauth\Authentication\TokenAuthUser;
+use Drupal\taxonomy\TermInterface;
 use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
 
@@ -26,9 +27,8 @@ final class TaxonomyToolProvider implements ToolProviderInterface {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
-    private readonly AccountProxyInterface $currentUser,
     private readonly ConfigFactoryInterface $configFactory,
-    private readonly AccessibleEntityPager $pager,
+    private readonly EntityReadTools $reads,
   ) {}
 
   /**
@@ -40,9 +40,9 @@ final class TaxonomyToolProvider implements ToolProviderInterface {
         name: 'drupal_vocabularies_list',
         title: 'Vocabularies',
         description: 'Lists taxonomy vocabularies with label and description. Term data exposure is limited to the vocabularies enabled for MCP.',
-        inputSchema: ['type' => 'object', 'properties' => new \stdClass(), 'additionalProperties' => FALSE],
-        handler: fn (): array => $this->vocabulariesList(),
-        family: 'taxonomy',
+        inputSchema: ToolSchema::object([]),
+        handler: fn (array $args, TokenAuthUser $caller): array => $this->vocabulariesList(),
+        family: ToolFamily::Taxonomy,
         extraPermissions: ['administer taxonomy'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
@@ -50,54 +50,52 @@ final class TaxonomyToolProvider implements ToolProviderInterface {
         name: 'drupal_vocabulary_get',
         title: 'Vocabulary detail',
         description: 'Returns one vocabulary: label, description, whether hierarchy is used, and weight.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) ['vid' => ['type' => 'string']],
-          'required' => ['vid'],
-          'additionalProperties' => FALSE,
-        ],
-        handler: fn (array $args): array => $this->vocabularyGet($args['vid']),
-        family: 'taxonomy',
+        inputSchema: ToolSchema::object([
+          'vid' => ['type' => 'string'],
+        ], ['vid']),
+        handler: fn (array $args, TokenAuthUser $caller): array => $this->vocabularyGet($args['vid']),
+        family: ToolFamily::Taxonomy,
         extraPermissions: ['administer taxonomy'],
         annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
       ),
-      new ToolDefinition(
+      $this->reads->listTool(
         name: 'drupal_terms_list',
         title: 'List taxonomy terms',
         description: 'Pages through taxonomy terms of one explicitly enabled vocabulary, filtered by the caller\'s view access.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) [
-            'vid' => ['type' => 'string', 'description' => 'Vocabulary machine name, e.g. "tags".'],
-            'cursor' => ['type' => 'string', 'description' => 'Opaque cursor returned by the previous page.'],
-            'limit' => ['type' => 'integer', 'minimum' => 1],
-            'name_contains' => ['type' => 'string'],
+        family: ToolFamily::Taxonomy,
+        entityTypeId: 'taxonomy_term',
+        contextSeed: 'terms',
+        filters: [
+          'vid' => [
+            'schema' => ['type' => 'string', 'description' => 'Vocabulary machine name, e.g. "tags".'],
+            'field' => 'vid',
+            'operator' => EntityReadTools::OP_EQUALS,
           ],
-          'required' => ['vid'],
-          'additionalProperties' => FALSE,
+          'name_contains' => [
+            'schema' => ['type' => 'string'],
+            'field' => 'name',
+            'operator' => EntityReadTools::OP_CONTAINS,
+          ],
         ],
-        handler: fn (array $args): array => $this->termsList(
-          $args['vid'],
-          $args['cursor'] ?? NULL,
-          isset($args['limit']) ? (int) $args['limit'] : NULL,
-          $args['name_contains'] ?? NULL,
-        ),
-        family: 'taxonomy',
-        annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
+        project: EntityReadTools::labelProject(),
+        requiredFilters: ['vid'],
+        filterGuard: function (array $values): void {
+          $this->assertExposedVocabulary($values['vid']);
+        },
+        extraResponse: fn (array $values): array => ['vid' => $values['vid']],
       ),
-      new ToolDefinition(
+      $this->reads->getTool(
         name: 'drupal_term_get',
         title: 'Read taxonomy term',
         description: 'Returns one taxonomy term with metadata, description (filtered), and parent references viewable by the caller.',
-        inputSchema: [
-          'type' => 'object',
-          'properties' => (object) ['id' => ['type' => 'integer', 'minimum' => 1]],
-          'required' => ['id'],
-          'additionalProperties' => FALSE,
-        ],
-        handler: fn (array $args): array => $this->termGet((int) $args['id']),
-        family: 'taxonomy',
-        annotations: new ToolAnnotations(readOnlyHint: TRUE, idempotentHint: TRUE),
+        family: ToolFamily::Taxonomy,
+        entityTypeId: 'taxonomy_term',
+        label: 'Term',
+        guard: function (TermInterface $term): void {
+          if (!\in_array($term->bundle(), $this->enabledVocabularies(), TRUE)) {
+            throw new ToolCallException('This vocabulary is not exposed through MCP.');
+          }
+        },
       ),
     ];
   }
@@ -147,68 +145,16 @@ final class TaxonomyToolProvider implements ToolProviderInterface {
   }
 
   /**
-   * Executes the operation.
-   *
-   * @return array<string, mixed>
-   *   The operation result.
+   * Rejects vocabularies outside the read allowlist.
    */
-  private function termsList(string $vid, ?string $cursor, ?int $limit, ?string $nameContains): array {
-    if (!\in_array($vid, $this->enabledVocabularies(), TRUE)) {
-      throw new ToolCallException(sprintf('Vocabulary "%s" is not exposed through MCP.', $vid));
+  private function assertExposedVocabulary(?string $vid): void {
+    if ($vid === NULL || !\in_array($vid, $this->enabledVocabularies(), TRUE)) {
+      throw new ToolCallException(sprintf('Vocabulary "%s" is not exposed through MCP.', (string) $vid));
     }
-    $pageLimit = Limits::clamp($this->configFactory, $limit);
-    $storage = $this->entityTypeManager->getStorage('taxonomy_term');
-    $account = $this->currentUser->getAccount();
-    $page = $this->pager->page(
-      $storage,
-      $account,
-      $cursor,
-      $pageLimit,
-      json_encode(['terms', $vid, $nameContains], JSON_THROW_ON_ERROR),
-      function (int $offset, int $length) use ($storage, $vid, $nameContains): array {
-        $query = $storage->getQuery()
-          ->accessCheck(TRUE)
-          ->condition('vid', $vid)
-          ->sort('tid', 'ASC')
-          ->range($offset, $length);
-        if ($nameContains !== NULL) {
-          $query->condition('name', $nameContains, 'CONTAINS');
-        }
-        return $query->execute();
-      },
-      fn ($term): array => ['id' => (int) $term->id(), 'name' => (string) $term->label()],
-    );
-    return ['vid' => $vid, 'limit' => $pageLimit] + $page;
   }
 
   /**
-   * Executes the operation.
-   *
-   * @return array<string, mixed>
-   *   The operation result.
-   */
-  private function termGet(int $id): array {
-    $term = $this->entityTypeManager->getStorage('taxonomy_term')->load($id);
-    if ($term === NULL) {
-      throw new ToolCallException(sprintf('Term %d does not exist.', $id));
-    }
-    if (!\in_array($term->bundle(), $this->enabledVocabularies(), TRUE)) {
-      throw new ToolCallException('This vocabulary is not exposed through MCP.');
-    }
-    $account = $this->currentUser->getAccount();
-    if (!$term->access('view', $account)) {
-      throw new ToolCallException(sprintf('Term %d is not accessible.', $id));
-    }
-    $projected = EntityProjection::fieldValues($term, $account);
-    return [
-      'item' => EntityProjection::entityMeta($term, $account),
-      'fields' => $projected['values'],
-      'fields_withheld' => $projected['fields_withheld'],
-    ];
-  }
-
-  /**
-   * Executes the operation.
+   * Returns the vocabulary allowlist.
    *
    * @return list<string>
    *   The operation result.

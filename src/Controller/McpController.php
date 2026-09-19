@@ -10,6 +10,7 @@ use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Flood\FloodInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\drupal_mcp\Access\McpAccessPolicy;
+use Drupal\drupal_mcp\Http\EndpointAllowlist;
 use Drupal\drupal_mcp\Http\McpRequestValidator;
 use Drupal\drupal_mcp\Mcp\ServerFactory;
 use Drupal\simple_oauth\Authentication\TokenAuthUser;
@@ -38,6 +39,7 @@ final class McpController extends ControllerBase {
     private readonly McpAccessPolicy $accessPolicy,
     private readonly ServerFactory $serverFactory,
     private readonly McpRequestValidator $requestValidator,
+    private readonly EndpointAllowlist $endpointAllowlist,
     private readonly HttpMessageFactoryInterface $httpMessageFactory,
     private readonly HttpFoundationFactoryInterface $httpFoundationFactory,
     private readonly FloodInterface $flood,
@@ -53,6 +55,7 @@ final class McpController extends ControllerBase {
       $container->get('drupal_mcp.access_policy'),
       $container->get('drupal_mcp.server_factory'),
       $container->get('drupal_mcp.request_validator'),
+      $container->get('drupal_mcp.endpoint_allowlist'),
       $container->get('psr7.http_message_factory'),
       $container->get('psr7.http_foundation_factory'),
       $container->get('flood'),
@@ -127,9 +130,6 @@ final class McpController extends ControllerBase {
     $settings = $this->config('drupal_mcp.settings');
     $maxBody = max(1024, (int) $settings->get('max_body_bytes'));
 
-    $allowedHosts = array_values(array_filter($settings->get('allowed_hosts') ?? []));
-    $allowedOrigins = array_values(array_filter($settings->get('allowed_origins') ?? []));
-
     $psr7Request = $this->httpMessageFactory->createRequest($request);
     $server = $this->serverFactory->forAccount($this->accountProxy->getAccount());
 
@@ -137,8 +137,8 @@ final class McpController extends ControllerBase {
       $psr7Request,
       logger: $this->logger,
       middleware: [
-        new CorsMiddleware($allowedOrigins),
-        new DnsRebindingProtectionMiddleware($allowedHosts),
+        new CorsMiddleware($this->endpointAllowlist->origins()),
+        new DnsRebindingProtectionMiddleware($this->endpointAllowlist->hosts()),
       ],
       maxBodyBytes: $maxBody,
     );

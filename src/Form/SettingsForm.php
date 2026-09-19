@@ -8,6 +8,7 @@ use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\drupal_mcp\Diagnostics\ApprovedConfigProjections;
 use Drupal\drupal_mcp\Diagnostics\ApprovedDatabaseSurfaces;
+use Drupal\drupal_mcp\Mcp\OperationCapability;
 
 /**
  * Settings for the Drupal MCP endpoint.
@@ -47,14 +48,14 @@ final class SettingsForm extends ConfigFormBase {
       '#type' => 'textfield',
       '#title' => $this->t('Required read scope'),
       '#description' => $this->t('The OAuth scope required by MCP read operations. It must exist as a Simple OAuth scope and be grantable to connecting clients.'),
-      '#default_value' => $config->get('read_scope'),
+      '#default_value' => OperationCapability::Read->resolveScope($this->configFactory),
       '#required' => TRUE,
     ];
     $form['auth']['write_scope'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Required write scope'),
       '#description' => $this->t('The OAuth scope required by MCP write operations. It must exist as a Simple OAuth scope and be grantable to connecting clients.'),
-      '#default_value' => $config->get('write_scope') ?: 'mcp:write',
+      '#default_value' => OperationCapability::Write->resolveScope($this->configFactory),
       '#required' => TRUE,
     ];
     $form['auth']['resource_binding'] = [

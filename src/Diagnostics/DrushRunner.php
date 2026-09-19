@@ -7,7 +7,6 @@ namespace Drupal\drupal_mcp\Diagnostics;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Lock\LockBackendInterface;
-use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Process\Process;
@@ -56,7 +55,6 @@ final class DrushRunner {
     private readonly ConfigFactoryInterface $configFactory,
     private readonly LoggerInterface $logger,
     private readonly string $appRoot,
-    private readonly AccountProxyInterface $currentUser,
     private readonly RequestStack $requestStack,
     private readonly LockBackendInterface $lock,
   ) {}
@@ -64,6 +62,8 @@ final class DrushRunner {
   /**
    * Runs one approved command for a caller.
    *
+   * @param \Drupal\simple_oauth\Authentication\TokenAuthUser $caller
+   *   The account invoking the diagnostic.
    * @param \Drupal\drupal_mcp\Diagnostics\DrushCommandSpec $spec
    *   The approved command specification.
    * @param array<string, mixed> $arguments
@@ -72,9 +72,9 @@ final class DrushRunner {
    * @return array{ok: bool, exit_code: ?int, timed_out: bool, output: array|null, error: ?string}
    *   Bounded, projected result. Never raw unbounded stdout.
    */
-  public function run(DrushCommandSpec $spec, array $arguments): array {
+  public function run(TokenAuthUser $caller, DrushCommandSpec $spec, array $arguments): array {
     $started = microtime(TRUE);
-    $audit = $this->auditContext($spec->id);
+    $audit = $this->auditContext($caller, $spec->id);
     try {
       $acquired = $this->lock->acquire(self::LOCK_NAME, self::LOCK_TTL_SECONDS);
     }
@@ -213,13 +213,11 @@ final class DrushRunner {
    * @return array<string, int|string|null>
    *   The operation result.
    */
-  private function auditContext(string $operationId): array {
-    $account = $this->currentUser->getAccount();
-    $consumer = $account instanceof TokenAuthUser ? $account->getConsumer()->getClientId() : NULL;
+  private function auditContext(TokenAuthUser $caller, string $operationId): array {
     $request = $this->requestStack->getCurrentRequest();
     return [
-      'uid' => (int) $account->id(),
-      'consumer' => $consumer,
+      'uid' => (int) $caller->id(),
+      'consumer' => $caller->getConsumer()->getClientId(),
       'operation_id' => $operationId,
       'request_id' => $request?->headers->get('X-Request-ID') ?: Uuid::v4()->toRfc4122(),
     ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\drupal_mcp\Unit;
 
+use Drupal\drupal_mcp\Http\EndpointAllowlist;
 use Drupal\drupal_mcp\Http\McpRequestValidator;
 use Drupal\Tests\drupal_mcp\Unit\Fixtures\ConfigFactoryStub;
 use PHPUnit\Framework\TestCase;
@@ -24,12 +25,12 @@ final class McpRequestValidatorTest extends TestCase {
    */
   protected function setUp(): void {
     parent::setUp();
-    $this->validator = new McpRequestValidator(new ConfigFactoryStub([
+    $this->validator = new McpRequestValidator(new EndpointAllowlist(new ConfigFactoryStub([
       'drupal_mcp.settings' => [
         'allowed_hosts' => ['mcp.example', 'client.example'],
         'allowed_origins' => ['https://client.example'],
       ],
-    ]));
+    ])));
   }
 
   /**
